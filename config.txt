@@ -1,0 +1,49 @@
+[vmonitor]
+
+; Bind addresses. Must be all different
+; link1_client exchanges packets with link1_server only
+; the same for link2_*
+
+link1_server = 127.0.0.1:55000
+link2_server = 127.0.0.1:55001
+link1_client = 127.0.0.1:55002
+link2_client = 127.0.0.1:55003
+
+; pingavg: average link ping time
+; pingvar: fudge factor of ping time
+; timeout: link is down if no pings after this time
+; ctimeout: didn't get response to our challenge token
+; hysteresis: minimum time between state transitions
+; heartbeat: log mark just to show that app is still running
+; all times in seconds
+
+pingavg = 20
+pingvar = 10
+timeout = 90
+ctimeout = 135
+hysteresis = 300
+heartbeat = 3600
+
+; Scripts to run when state changes. None if no script
+; If only one side (client or server) needs to do something about
+; a link status change, create no-op scripts at the other side.
+
+link1_link2_script = None
+link2_script = None
+link1_script = None
+nolink_script = None
+
+; Secret key used to sign ping packets with HMAC
+
+secret = abracadabra
+
+; loglevel (0=debug, 1=info, 2=change, 3=error)
+; maillevel (same thing, minimum 1)
+; mailto: recipient of automatic e-mails
+; mailfrom: putative sender of e-mails
+
+logfile = None
+loglevel = 0
+maillevel = 2
+mailfrom = None
+mailto = None

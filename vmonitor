@@ -1,0 +1,410 @@
+#!/usr/bin/python3
+
+#####################################################################
+
+# FIXME determine whether the other side gets our packets, using a nonce
+
+import socket, select, time, sys, os, datetime, hmac, random, configparser
+
+def _gen_packet(link, key, mode, challenge):
+	our_time = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
+	data = ("%d %s %s %s " % (link, our_time, mode, challenge)).encode('ascii')
+	mac = hmac.new(key, msg=data, digestmod='sha256')
+	data += mac.hexdigest()[0:16].encode('ascii')
+	return data
+
+def gen_packet(link, mode, challenge):
+	return _gen_packet(link, config["secret"], mode, challenge)
+
+def _parse_packet(data, key):
+	data = data.decode('ascii', errors='ignore').split(" ")
+	if len(data) != 5:
+		log(0, "Invalid packet format")
+		return None
+	link, their_time, mode, challenge, hexmac = data
+	if link not in ("1", "2"):
+		log(0, "Link number")
+		return None
+	tmp = ("%s %s %s %s " % (link, their_time, mode, challenge)).encode('ascii')
+	mac = hmac.new(key, msg=tmp, digestmod='sha256')
+	exp_hexmac = mac.hexdigest()[0:16]
+	if exp_hexmac != hexmac:
+		log(0, "Inconsistent HMAC")
+		return None 
+	try:
+		their_time = datetime.datetime.strptime(their_time, "%Y-%m-%dT%H:%M:%S")
+	except ValueError:
+		log(0, "Invalid date/time")
+		return None 
+	diff = datetime.datetime.utcnow() - their_time
+	if abs(diff.seconds) > 120:
+		log(0, "Skewed date/time")
+		return None 
+	if mode not in ('c', 'r'):
+		log(0, "Invalid mode")
+		return None
+	return int(link), mode, challenge
+
+def parse_packet(data):
+	return _parse_packet(data, config["secret"])
+
+LINK1_LINK2 = "LINK1_LINK2"
+LINK1="LINK1"
+LINK2="LINK2"
+NOLINK="NOLINK"
+
+def log(level, s):
+	s = time.ctime() + " " + s
+	if level < config["loglevel"]:
+		return
+
+	if not config["daemon"]:
+		print(s)
+
+	if config["logfile"] != "None":
+		log = file(config["logfile"], "a")
+		log.write(s)
+		log.close()
+
+	# credit: http://www.thinkspot.net/sheila/article.php?story=20040822174141155
+
+	if level < config["maillevel"]:
+		return
+	if config["mailto"] == 'None' or config["mailfrom"] == 'None':
+		return
+
+	mailbody = "From: %s\r\nTo: %s\r\nSubject: vmonitor\r\n\r\n%s\r\n" % \
+			(config["mailfrom"], config["mailto"], s);
+	MAIL = "/usr/sbin/sendmail"
+	p = os.popen("%s -t" % MAIL, 'w')
+	p.write(mailbody)
+	exitcode = p.close()
+
+# background() credits: http://www.noah.org/python/daemonize.py
+
+def background():
+	try: 
+		pid = os.fork() 
+		if pid > 0:
+			sys.exit(0)   # Exit first parent.
+	except OSError as e: 
+		sys.stderr.write("fork #1 failed: (%d) %s\n" % (e.errno, e.strerror))
+		sys.exit(1)
+
+	# Decouple from parent environment.
+	os.chdir("/") 
+	os.umask(0) 
+	os.setsid() 
+
+	# Do second fork.
+	try: 
+		pid = os.fork() 
+		if pid > 0:
+			sys.exit(0)
+	except OSError as e: 
+		sys.stderr.write("fork #2 failed: (%d) %s\n" % (e.errno, e.strerror))
+		sys.exit(1)
+
+class otimer:
+	def __init__(self):
+		self.tempo = 0
+		pass
+	def start(self, tempo):
+		self.tempo = tempo
+		self.tm = time.time() + self.tempo
+	def done(self):
+		tm = time.time()
+		if tm > self.tm:
+			return 1
+		else:
+			return 0
+	def left(self):
+		return max(0, self.tm - time.time())
+
+def Bind(addr1, addr2):
+	sock1 = None
+	sock2 = None
+	while not sock1 or not sock2:
+		try:
+
+			sock1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			sock1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+			sock1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+			sock1.bind(addr1)
+			sock2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			sock2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+			sock2.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+			sock2.bind(addr2)
+		except socket.error as err:
+			log(3, "Erro no bind(): %s" % err)
+			if sock1:
+				sock1.close()
+			if sock2:
+				sock2.close()
+			sock1 = None
+			sock2 = None
+			time.sleep(config["pingavg"])
+	return [sock1, sock2]
+
+def do_script(status):
+	script = {LINK1_LINK2: config["link1_link2_script"], LINK1: config["link1_script"], \
+		  LINK2: config["link2_script"], NOLINK: config["nolink_script"]}[status]
+	if script != "None":
+		log(1, "Running script %s " % script)
+		os.system(script)
+
+def mainloop():
+	socks = None
+	pingtime = otimer()
+	pingtime.start(0)
+	hysteresis = otimer()
+	plink_timeout = [None, otimer(), otimer()]
+	clink_timeout = [None, otimer(), otimer()]
+	heartbeat = otimer()
+	heartbeat.start(config["heartbeat"])
+	hysteresis.start(5)
+	plink_timeout[1].start(config["timeout"])
+	plink_timeout[2].start(config["timeout"])
+	clink_timeout[1].start(config["ctimeout"])
+	clink_timeout[2].start(config["ctimeout"])
+	our_challenge = [None, "", ""]
+	their_challenge = [None, "", ""]
+	challenge_time = [None, True, True]
+
+	status = "xxx Invalid"
+
+	if config["persona"] == "client":
+		peer_fixed = True
+		peer = [None, config["link1_server"], config["link2_server"]]
+	else:
+		# Cliente pode estar atrás de um NAT e seu endereço
+		# não é conhecido a priori, tem de ser obtido do pacote
+		peer_fixed = False
+		peer = [None, None, None]
+
+	while 1:
+		if not socks:
+			socks = Bind(config["link1_%s" % config["persona"]], \
+					config["link2_%s" % config["persona"]])
+
+		log(0, "Status %s to1 %d/%d to2 %d/%d hys %d ping %d" % (status,
+			plink_timeout[1].left(), clink_timeout[1].left(),
+			plink_timeout[2].left(), clink_timeout[2].left(),
+			hysteresis.left(), pingtime.left()))
+
+		if heartbeat.done():
+			log(1, "Heartbeat")
+			heartbeat.start(config["heartbeat"])
+
+		if pingtime.done():
+			for link in (1, 2):
+				if not peer[link]:
+					log(1, "Peer %d unknown" % link)
+				else:
+					if not our_challenge[link]:
+						our_challenge[link] = "%x" % random.randint(10, 0x100000000)
+					if challenge_time[link] or not their_challenge[link]:
+						challenge = our_challenge[link]
+						mode = 'c'
+					else:
+						challenge = their_challenge[link]
+						mode = 'r'
+					challenge_time[link] = not challenge_time[link]
+					data = gen_packet(link, mode, challenge)
+					try:
+						socks[link-1].sendto(data, 0, peer[link])
+						log(0, "Link %d sent %s" % (link, data))
+					except socket.error:
+						log(3, "error sendto %d" % link, 1)
+						pass
+
+			pingtime.start(config["pingavg"] + \
+				config["pingvar"] * 2 * (random.random() - 0.5))
+
+		try:
+			rd, wr, ex = select.select(socks, [], [], 1)
+		except socket.error as err:
+			log(3, "Erro select: %s" % err)
+			# probably one of the bind addressess was down
+			# Linux seems not to kill socket even though interface is down
+			for sock in socks:
+				sock.close()
+			socks = None
+			continue
+
+		for sock in rd:
+			try:
+				data, addr = sock.recvfrom(1500)
+				log(0, "Received %s" % data)
+			except socket.error:
+				log(3, "Erro recvfrom")
+				continue
+
+			info = parse_packet(data)
+			if not info:
+				log(0, "Corrupted packet")
+				continue
+			link, mode, challenge = info
+
+			if link == 2 and sock is socks[0]:
+				log(3, "Pacote link 2 vindo por link 1")
+				continue
+			if link == 1 and sock is socks[1]:
+				log(3, "Pacote link 1 vindo por link 2")
+				continue
+
+			plink_timeout[link].start(config["timeout"])
+			if not peer_fixed and peer[link] != addr:
+				peer[link] = addr
+				log(1, "Peer %d = %s" % (link, str(peer[link])))
+
+			if mode == 'c':
+				their_challenge[link] = challenge
+			else:
+				if not our_challenge[link]:
+					log(0, "Not evaluating response %s" % challenge)
+					pass
+				elif challenge == our_challenge[link]:
+					log(0, "Good response %s" % challenge)
+					clink_timeout[link].start(config["ctimeout"])
+					our_challenge[link] = ""
+				else:
+					log(0, "Wrong response exp %s got %s" % \
+						(challenge, our_challenge[link]))
+
+		link1_down = plink_timeout[1].done() or clink_timeout[1].done()
+		link2_down = plink_timeout[2].done() or clink_timeout[2].done()
+		to = link1_down + 2 * link2_down
+
+		newstatus = [LINK1_LINK2, LINK2, LINK1, NOLINK][to]
+
+		if newstatus != status and hysteresis.done():
+			status = newstatus
+			log(2, "New status: %s" % status)
+			do_script(status)
+			hysteresis.start(config["hysteresis"])
+
+def usage():
+	print("Uso: vmonitor <config file> client|server [daemon]")
+	sys.exit(1)
+
+if len(sys.argv) < 3:
+	usage()
+
+config = {}
+persona = sys.argv[2]
+
+if persona not in ('client', 'server'):
+	usage()
+config['persona'] = persona
+
+config['daemon'] = 0
+if len(sys.argv) > 3:
+	config['daemon'] = (sys.argv[3] == "daemon")
+
+cfgfile = configparser.ConfigParser()
+cfgfile.read(sys.argv[1])
+if 'vmonitor' not in cfgfile:
+	usage()
+cfg = cfgfile['vmonitor']
+
+if 'secret' not in cfg:
+	usage()
+config['secret'] = cfg['secret'].encode('utf-8')
+if len(config['secret']) < 10:
+	print("Secret in configuration must have at least 10 characters")
+	usage()
+
+def prechk(item):
+	if item not in cfg:
+		print("%s must be in config (None=no value)" % item)
+		usage()
+
+def prechki(item):
+	if item not in cfg:
+		print("%s must be in config as an integer value" % item)
+		usage()
+
+for name in ('mailfrom', 'mailto', 'logfile', 'link1_link2_script', 'link1_script', \
+		'link2_script', 'nolink_script'):
+	prechk(name)
+	config[name] = cfg[name]
+
+if config['mailfrom'] != config['mailto'] and 'None' in (config['mailfrom'], config['mailto']):
+	print("If either of mailfrom or mailto is None, both must be None")
+	usage()
+
+for name in ('pingavg', 'timeout', 'ctimeout', 'hysteresis', 'heartbeat'):
+	prechki(name)
+	try:
+		config[name] = int(cfg[name])
+	except ValueError:
+		print("Config %s should be an integer value" % name)
+		usage()
+	if config[name] <= 0:
+		print("Config %s should be a positive integer value" % name)
+		usage()
+
+for name in ('pingvar', 'loglevel', 'maillevel'):
+	prechki(name)
+	try:
+		config[name] = int(cfg[name])
+	except ValueError:
+		print("Config %s should be an integer value" % name)
+		usage()
+	if config[name] < 0:
+		print("Config %s should be a non-negative integer value" % name)
+		usage()
+
+if config['pingavg'] <= config['pingvar']:
+	print("pingavg time must be larger than pingvar")
+	usage()
+
+if (config['pingavg'] + config['pingvar'] + 1) >= config['timeout']:
+	print("pingavg + pingvar + 1 should be less than link timeout")
+	usage()
+
+if config['ctimeout'] <= config['timeout']:
+	print("Challenge timeout (ctimeout) should be bigger than timeout")
+	usage()
+
+if config['hysteresis'] <= config['timeout']:
+	print("Hysteresis should be bigger than link timeout")
+	usage()
+
+def parsecfgaddr(item):
+	if item not in cfg:
+		print("%s must be in config as addr:port" % item)
+		usage()
+	ap = cfg[item].split(':')
+	if len(ap) != 2:
+		print("%s must be in config as addr:port" % item)
+		usage()
+	try:
+		addr, port = ap[0], int(ap[1])
+	except ValueError:
+		print("%s must be in config as addr:port" % item)
+		usage()
+	if port <= 0 or port >= 65535 or not addr:
+		print("%s must be in config as addr:port" % item)
+		usage()
+	return (addr, port)
+
+for name in ('link1_server', 'link2_server', 'link1_client', 'link2_client'):
+	config[name] = parsecfgaddr(name)
+
+if config['link1_server'] == config['link2_server'] or \
+		config['link1_client'] == config['link2_client'] or \
+		config['link1_client'] == config['link1_server'] or \
+		config['link1_client'] == config['link2_server'] or \
+		config['link2_client'] == config['link1_server'] or \
+		config['link2_client'] == config['link2_server']:
+	print("Link 1 address:port must be different from Link 2 pair")
+	print("both at client and server side.")
+	usage()
+
+if config["daemon"]:
+	background()
+
+log(1, "vmonitor, persona = %s" % config["persona"])
+mainloop()
