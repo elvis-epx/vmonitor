@@ -103,20 +103,46 @@ def background():
 		sys.exit(1)
 
 class otimer:
-	def __init__(self):
-		self.tempo = 0
+	timers = {}
+
+	@staticmethod
+	def next_timeout():
+		next_time = 9999999999
+		for timer in otimer.timers.values():
+			next_time = min(next_time, timer.left())
+		return next_time
+
+	@staticmethod
+	def handle_timeout():
+		for timer in otimer.timers.values():
+			if timer.eval():
+				break
+
+	def __init__(self, cb):
+		self.tm = 0
+		self.cb = cb
 		pass
+
 	def start(self, tempo):
-		self.tempo = tempo
-		self.tm = time.time() + self.tempo
-	def done(self):
-		tm = time.time()
-		if tm > self.tm:
-			return 1
-		else:
-			return 0
+		self.tm = time.time() + tempo
+		otimer.timers[id(self)] = self
+
+	def eval(self):
+		if not self.tm:
+			return False
+		if time.time() > self.tm:
+			del otimer.timers[id(self)]
+			self.tm = 0
+			self.cb()
+			return True
+
 	def left(self):
+		if not self.tm:
+			return 0
 		return max(0, self.tm - time.time())
+
+	def expired(self):
+		return self.left() == 0
 
 def Bind(addr1, addr2):
 	sock1 = None
@@ -149,129 +175,6 @@ def do_script(status):
 	if script != "None":
 		log(1, "Running script %s " % script)
 		os.system(script)
-
-def mainloop():
-	socks = None
-	pingtime = otimer()
-	pingtime.start(0)
-	hysteresis = otimer()
-	plink_timeout = [None, otimer(), otimer()]
-	clink_timeout = [None, otimer(), otimer()]
-	heartbeat = otimer()
-	heartbeat.start(config["heartbeat"])
-	hysteresis.start(5)
-	plink_timeout[1].start(config["timeout"])
-	plink_timeout[2].start(config["timeout"])
-	clink_timeout[1].start(config["ctimeout"])
-	clink_timeout[2].start(config["ctimeout"])
-	our_challenge = [None, "None", "None"]
-	their_challenge = [None, "None", "None"]
-
-	status = "xxx Invalid"
-
-	if config["persona"] == "client":
-		peer_fixed = True
-		peer = [None, config["link1_server"], config["link2_server"]]
-	else:
-		# Cliente pode estar atrás de um NAT e seu endereço
-		# não é conhecido a priori, tem de ser obtido do pacote
-		peer_fixed = False
-		peer = [None, None, None]
-
-	while 1:
-		if not socks:
-			socks = Bind(config["link1_%s" % config["persona"]], \
-					config["link2_%s" % config["persona"]])
-
-		log(0, "Status %s to1 %d/%d to2 %d/%d hys %d ping %d" % (status,
-			plink_timeout[1].left(), clink_timeout[1].left(),
-			plink_timeout[2].left(), clink_timeout[2].left(),
-			hysteresis.left(), pingtime.left()))
-
-		if heartbeat.done():
-			log(1, "Heartbeat")
-			heartbeat.start(config["heartbeat"])
-
-		if pingtime.done():
-			for link in (1, 2):
-				if not peer[link]:
-					log(1, "Peer %d unknown" % link)
-				else:
-					if our_challenge[link] == "None":
-						our_challenge[link] = "%x" % random.randint(10, 0xffffffff)
-					challenge = our_challenge[link]
-					response = their_challenge[link]
-					data = gen_packet(link, challenge, response)
-					try:
-						socks[link-1].sendto(data, 0, peer[link])
-						log(0, "Link %d sent %s" % (link, data))
-					except socket.error:
-						log(3, "error sendto %d" % link, 1)
-						pass
-
-			pingtime.start(config["pingavg"] + \
-				config["pingvar"] * 2 * (random.random() - 0.5))
-
-		try:
-			rd, wr, ex = select.select(socks, [], [], 1)
-		except socket.error as err:
-			log(3, "Erro select: %s" % err)
-			# probably one of the bind addressess was down
-			# Linux seems not to kill socket even though interface is down
-			for sock in socks:
-				sock.close()
-			socks = None
-			continue
-
-		for sock in rd:
-			try:
-				data, addr = sock.recvfrom(1500)
-				log(0, "Received %s" % data)
-			except socket.error:
-				log(3, "Erro recvfrom")
-				continue
-
-			info = parse_packet(data)
-			if not info:
-				log(0, "Corrupted packet")
-				continue
-			link, challenge, response = info
-
-			if link == 2 and sock is socks[0]:
-				log(3, "Pacote link 2 vindo por link 1")
-				continue
-			if link == 1 and sock is socks[1]:
-				log(3, "Pacote link 1 vindo por link 2")
-				continue
-
-			plink_timeout[link].start(config["timeout"])
-			if not peer_fixed and peer[link] != addr:
-				peer[link] = addr
-				log(1, "Peer %d = %s" % (link, str(peer[link])))
-
-			their_challenge[link] = challenge
-			if our_challenge[link] == "None":
-				log(0, "Not evaluating response %s" % response)
-				pass
-			elif response == our_challenge[link]:
-				log(0, "Good response %s" % response)
-				clink_timeout[link].start(config["ctimeout"])
-				our_challenge[link] = "None"
-			else:
-				log(0, "Wrong response exp %s got %s" % \
-					(response, our_challenge[link]))
-
-		link1_down = plink_timeout[1].done() or clink_timeout[1].done()
-		link2_down = plink_timeout[2].done() or clink_timeout[2].done()
-		to = link1_down + 2 * link2_down
-
-		newstatus = [LINK1_LINK2, LINK2, LINK1, NOLINK][to]
-
-		if newstatus != status and hysteresis.done():
-			status = newstatus
-			log(2, "New status: %s" % status)
-			do_script(status)
-			hysteresis.start(config["hysteresis"])
 
 def usage():
 	print("Uso: vmonitor <config file> client|server [daemon]")
@@ -396,4 +299,151 @@ if config["daemon"]:
 	background()
 
 log(1, "vmonitor, persona = %s" % config["persona"])
-mainloop()
+
+socks = None
+our_challenge = [None, "None", "None"]
+their_challenge = [None, "None", "None"]
+
+status = "xxx"
+
+if config["persona"] == "client":
+	peer_fixed = True
+	peer = [None, config["link1_server"], config["link2_server"]]
+else:
+	# Cliente pode estar atrás de um NAT e seu endereço
+	# não é conhecido a priori, tem de ser obtido do pacote
+	peer_fixed = False
+	peer = [None, None, None]
+
+
+def heartbeat_cb():
+	log(1, "Heartbeat")
+	heartbeat.start(config["heartbeat"])
+
+heartbeat = otimer(heartbeat_cb)
+heartbeat.start(config["heartbeat"])
+
+
+def pingtime_cb():
+	log(0, "pingtime_cb")
+	for link in (1, 2):
+		if not peer[link]:
+			log(1, "Peer %d unknown" % link)
+		else:
+			if our_challenge[link] == "None":
+				our_challenge[link] = "%x" % random.randint(10, 0xffffffff)
+			challenge = our_challenge[link]
+			response = their_challenge[link]
+			data = gen_packet(link, challenge, response)
+			try:
+				socks[link-1].sendto(data, 0, peer[link])
+				log(0, "Link %d sent %s" % (link, data))
+			except socket.error:
+				log(3, "error sendto %d" % link, 1)
+				pass
+
+	pingtime.start(config["pingavg"] + config["pingvar"] * 2 * (random.random() - 0.5))
+
+pingtime = otimer(pingtime_cb)
+pingtime.start(5)
+
+
+def handle_link_change():
+	global status
+	log(0, "handle_link_change")
+
+	if not hysteresis.expired():
+		return	
+
+	link1_down = plink_timeout[1].expired() or clink_timeout[1].expired()
+	link2_down = plink_timeout[2].expired() or clink_timeout[2].expired()
+	to = link1_down + 2 * link2_down
+
+	newstatus = [LINK1_LINK2, LINK2, LINK1, NOLINK][to]
+
+	if newstatus == status:
+		return
+
+	status = newstatus
+	log(2, "New status: %s" % status)
+	do_script(status)
+	hysteresis.start(config["hysteresis"])
+	
+
+plink_timeout = [None, otimer(handle_link_change), otimer(handle_link_change)]
+clink_timeout = [None, otimer(handle_link_change), otimer(handle_link_change)]
+hysteresis = otimer(handle_link_change)
+
+plink_timeout[1].start(config["timeout"])
+plink_timeout[2].start(config["timeout"])
+clink_timeout[1].start(config["ctimeout"])
+clink_timeout[2].start(config["ctimeout"])
+hysteresis.start(5)
+
+
+while 1:
+	if not socks:
+		socks = Bind(config["link1_%s" % config["persona"]], \
+				config["link2_%s" % config["persona"]])
+
+	to = otimer.next_timeout()
+
+	log(0, "Status %s to1 %d/%d to2 %d/%d hys %d ping %d next %d" % (status,
+		plink_timeout[1].left(), clink_timeout[1].left(),
+		plink_timeout[2].left(), clink_timeout[2].left(),
+		hysteresis.left(), pingtime.left(), to))
+
+	try:
+		rd, wr, ex = select.select(socks, [], [], to)
+	except socket.error as err:
+		log(3, "Erro select: %s" % err)
+		# probably one of the bind addressess was down
+		# Linux seems not to kill socket even though interface is down
+		for sock in socks:
+			sock.close()
+		socks = None
+		continue
+	
+	if not rd:
+		otimer.handle_timeout()
+		continue
+
+	sock = rd[0]
+
+	try:
+		data, addr = sock.recvfrom(1500)
+		log(0, "Received %s" % data)
+	except socket.error:
+		log(3, "Erro recvfrom")
+		continue
+
+	info = parse_packet(data)
+	if not info:
+		log(0, "Corrupted packet")
+		continue
+	link, challenge, response = info
+
+	if link == 2 and sock is socks[0]:
+		log(3, "Pacote link 2 vindo por link 1")
+		continue
+	if link == 1 and sock is socks[1]:
+		log(3, "Pacote link 1 vindo por link 2")
+		continue
+
+	plink_timeout[link].start(config["timeout"])
+	if not peer_fixed and peer[link] != addr:
+		peer[link] = addr
+		log(1, "Peer %d = %s" % (link, str(peer[link])))
+
+	their_challenge[link] = challenge
+	if our_challenge[link] == "None":
+		log(0, "Not evaluating response %s" % response)
+		pass
+	elif response == our_challenge[link]:
+		log(0, "Good response %s" % response)
+		clink_timeout[link].start(config["ctimeout"])
+		our_challenge[link] = "None"
+	else:
+		log(0, "Wrong response exp %s got %s" % \
+			(response, our_challenge[link]))
+
