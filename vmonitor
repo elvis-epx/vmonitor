@@ -6,26 +6,26 @@
 
 import socket, select, time, sys, os, datetime, hmac, random, configparser
 
-def _gen_packet(link, key, mode, challenge):
+def _gen_packet(link, key, challenge, response):
 	our_time = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
-	data = ("%d %s %s %s " % (link, our_time, mode, challenge)).encode('ascii')
+	data = ("%d %s %s %s " % (link, our_time, challenge, response)).encode('ascii')
 	mac = hmac.new(key, msg=data, digestmod='sha256')
 	data += mac.hexdigest()[0:16].encode('ascii')
 	return data
 
-def gen_packet(link, mode, challenge):
-	return _gen_packet(link, config["secret"], mode, challenge)
+def gen_packet(link, challenge, response):
+	return _gen_packet(link, config["secret"], challenge, response)
 
 def _parse_packet(data, key):
 	data = data.decode('ascii', errors='ignore').split(" ")
 	if len(data) != 5:
 		log(0, "Invalid packet format")
 		return None
-	link, their_time, mode, challenge, hexmac = data
+	link, their_time, challenge, response, hexmac = data
 	if link not in ("1", "2"):
 		log(0, "Link number")
 		return None
-	tmp = ("%s %s %s %s " % (link, their_time, mode, challenge)).encode('ascii')
+	tmp = ("%s %s %s %s " % (link, their_time, challenge, response)).encode('ascii')
 	mac = hmac.new(key, msg=tmp, digestmod='sha256')
 	exp_hexmac = mac.hexdigest()[0:16]
 	if exp_hexmac != hexmac:
@@ -40,10 +40,7 @@ def _parse_packet(data, key):
 	if abs(diff.seconds) > 120:
 		log(0, "Skewed date/time")
 		return None 
-	if mode not in ('c', 'r'):
-		log(0, "Invalid mode")
-		return None
-	return int(link), mode, challenge
+	return int(link), challenge, response
 
 def parse_packet(data):
 	return _parse_packet(data, config["secret"])
@@ -167,9 +164,8 @@ def mainloop():
 	plink_timeout[2].start(config["timeout"])
 	clink_timeout[1].start(config["ctimeout"])
 	clink_timeout[2].start(config["ctimeout"])
-	our_challenge = [None, "", ""]
-	their_challenge = [None, "", ""]
-	challenge_time = [None, True, True]
+	our_challenge = [None, "None", "None"]
+	their_challenge = [None, "None", "None"]
 
 	status = "xxx Invalid"
 
@@ -201,16 +197,11 @@ def mainloop():
 				if not peer[link]:
 					log(1, "Peer %d unknown" % link)
 				else:
-					if not our_challenge[link]:
-						our_challenge[link] = "%x" % random.randint(10, 0x100000000)
-					if challenge_time[link] or not their_challenge[link]:
-						challenge = our_challenge[link]
-						mode = 'c'
-					else:
-						challenge = their_challenge[link]
-						mode = 'r'
-					challenge_time[link] = not challenge_time[link]
-					data = gen_packet(link, mode, challenge)
+					if our_challenge[link] == "None":
+						our_challenge[link] = "%x" % random.randint(10, 0xffffffff)
+					challenge = our_challenge[link]
+					response = their_challenge[link]
+					data = gen_packet(link, challenge, response)
 					try:
 						socks[link-1].sendto(data, 0, peer[link])
 						log(0, "Link %d sent %s" % (link, data))
@@ -244,7 +235,7 @@ def mainloop():
 			if not info:
 				log(0, "Corrupted packet")
 				continue
-			link, mode, challenge = info
+			link, challenge, response = info
 
 			if link == 2 and sock is socks[0]:
 				log(3, "Pacote link 2 vindo por link 1")
@@ -258,19 +249,17 @@ def mainloop():
 				peer[link] = addr
 				log(1, "Peer %d = %s" % (link, str(peer[link])))
 
-			if mode == 'c':
-				their_challenge[link] = challenge
+			their_challenge[link] = challenge
+			if our_challenge[link] == "None":
+				log(0, "Not evaluating response %s" % response)
+				pass
+			elif response == our_challenge[link]:
+				log(0, "Good response %s" % response)
+				clink_timeout[link].start(config["ctimeout"])
+				our_challenge[link] = "None"
 			else:
-				if not our_challenge[link]:
-					log(0, "Not evaluating response %s" % challenge)
-					pass
-				elif challenge == our_challenge[link]:
-					log(0, "Good response %s" % challenge)
-					clink_timeout[link].start(config["ctimeout"])
-					our_challenge[link] = ""
-				else:
-					log(0, "Wrong response exp %s got %s" % \
-						(challenge, our_challenge[link]))
+				log(0, "Wrong response exp %s got %s" % \
+					(response, our_challenge[link]))
 
 		link1_down = plink_timeout[1].done() or clink_timeout[1].done()
 		link2_down = plink_timeout[2].done() or clink_timeout[2].done()
