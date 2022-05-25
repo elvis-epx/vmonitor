@@ -4,6 +4,8 @@
 
 import socket, select, time, sys, os, datetime, hmac, random, configparser
 
+config = {}
+
 def _gen_packet(link, key, challenge, response):
 	our_time = datetime.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
 	data = ("%d %s %s %s " % (link, our_time, challenge, response)).encode('ascii')
@@ -43,18 +45,25 @@ def _parse_packet(data, key):
 def parse_packet(data):
 	return _parse_packet(data, config["secret"])
 
+logfile = None
+
 def log(level, s):
-	s = time.ctime() + " " + s
+	s = config["persona"] + " " + time.ctime() + " " + s
 	if level < config["loglevel"]:
 		return
 
 	if not config["daemon"]:
 		print(s)
 
-	if config["logfile"] != "None":
-		log = file(config["logfile"], "a")
-		log.write(s)
-		log.close()
+	if config["logfile"] == "None":
+		return
+
+	global logfile
+	if not logfile:
+		logfile = open(config["logfile"], "a")
+	logfile.write(s)
+	logfile.write('\n')
+	logfile.flush()
 
 	# credit: http://www.thinkspot.net/sheila/article.php?story=20040822174141155
 
@@ -442,7 +451,6 @@ def parse_config():
 		usage()
 
 	return config
-
 
 if __name__ == '__main__':
 	config = parse_config()

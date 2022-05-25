@@ -43,7 +43,7 @@ secret = abracadabra
 ; mailfrom: putative sender of e-mails
 
 logfile = None
-loglevel = 0
+loglevel = 1
 maillevel = 2
 mailfrom = None
 mailto = None

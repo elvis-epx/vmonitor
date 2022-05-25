@@ -42,7 +42,7 @@ secret = abracadabra
 ; mailto: recipient of automatic e-mails
 ; mailfrom: putative sender of e-mails
 
-logfile = None
+logfile = ./vmonitor.log
 loglevel = 0
 maillevel = 2
 mailfrom = None
