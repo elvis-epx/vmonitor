@@ -151,7 +151,6 @@ def Bind(addr1, addr2):
 	sock2 = None
 	while not sock1 or not sock2:
 		try:
-
 			sock1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 			sock1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
 			sock1.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
