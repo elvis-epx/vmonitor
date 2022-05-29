@@ -37,13 +37,13 @@ nolink_script = None
 
 secret = abracadabra
 
-; loglevel (0=debug, 1=info, 2=change, 3=error)
-; maillevel (same thing, minimum 1)
+; loglevel (3=debug, 2=info, 1=warn, 0=error)
+; maillevel (same thing, maximum 2=info)
 ; mailto: recipient of automatic e-mails
 ; mailfrom: putative sender of e-mails
 
 logfile = None
-loglevel = 1
-maillevel = 2
+loglevel = 3
+maillevel = 1
 mailfrom = None
 mailto = None
