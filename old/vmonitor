@@ -1,0 +1,347 @@
+#!/usr/bin/python
+
+# This is the original, 2004 version that inspired the project.
+
+config = {	"persona": "server", \
+		"link1_server": "10.0.1.2", \
+		"link2_server": "192.168.1.1", \
+		"link1_client": "10.0.1.1", \
+		"link2_client": "192.168.1.2", \
+		"ping": 1, \
+		"debug": 0, \
+		"hysteresis": 15, \
+		"port": 55000, \
+		"link1_link2_script": "/etc/vmonitor/link1_link2", \
+		"link2_script": "/etc/vmonitor/link2", \
+		"link1_script": "/etc/vmonitor/link1", \
+		"nolink_script": "/etc/vmonitor/nolink", \
+		"mailfrom": "vmonitor@dominio.com.br", \
+		"mailto": "adm@dominio.com.br" \
+	}
+
+#####################################################################
+
+import socket
+import select
+import time
+import sys
+import os
+
+LINK1_LINK2 = "LINK1_LINK2"
+LINK1="LINK1"
+LINK2="LINK2"
+NOLINK="NOLINK"
+
+def msg(s, level=0):
+	s = time.ctime() + " " + s
+	if config["debug"] > 0:
+		print s
+	elif level > 0:
+		log = file("/var/log/vmonitor.log", "a")
+		print >> log, s
+		log.close()
+
+	# manda e-mail de mensagens importantes
+	# creditos: http://www.thinkspot.net/sheila/article.php?story=20040822174141155
+
+	if (level >= 2) and (config["mailto"] != '') and (config["mailfrom"] != ''):
+		if config["debug"] > 0:
+			print "Mandando e-mail"
+		mailbody = "From: %s\r\nTo: %s\r\nSubject: vmonitor\r\n\r\n%s\r\n" % \
+				(config["mailfrom"], config["mailto"], s);
+		MAIL = "/usr/sbin/sendmail"
+		p = os.popen("%s -t" % MAIL, 'w')
+		p.write(mailbody)
+		exitcode = p.close()
+		if exitcode:
+			if config["debug"] > 0:
+				print "		Remessa de e-mail deu pau"
+			msg("Remessa de e-mail falhou: %s" % exitcode, 1)
+			
+# background() credits: http://www.noah.org/python/daemonize.py
+
+def background():
+	try: 
+		pid = os.fork() 
+		if pid > 0:
+			sys.exit(0)   # Exit first parent.
+	except OSError, e: 
+		sys.stderr.write("fork #1 failed: (%d) %s\n" % (e.errno, e.strerror))
+		sys.exit(1)
+
+	# Decouple from parent environment.
+	os.chdir("/") 
+	os.umask(0) 
+	os.setsid() 
+
+	# Do second fork.
+	try: 
+		pid = os.fork() 
+		if pid > 0:
+			sys.exit(0)
+	except OSError, e: 
+		sys.stderr.write("fork #2 failed: (%d) %s\n" % (e.errno, e.strerror))
+		sys.exit(1)
+
+class otimer:
+	def __init__(self):
+		self.tempo = 0
+		pass
+	def start(self, tempo):
+		self.tempo = tempo
+		self.tm = time.time() + self.tempo
+	def done(self):
+		tm = time.time()
+		if tm > self.tm:
+			return 1
+		else:
+			return 0
+
+def Bind(addr1, addr2):
+	sock1 = None
+	sock2 = None
+	while not sock1 or not sock2:
+		try:
+			sock1 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			sock1.bind((addr1, config["port"]))
+			sock2 = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+			sock2.bind((addr2, config["port"]))
+		except socket.error, (errno, strerror):
+			msg("Erro no bind(): %s" % strerror, 1)
+			if sock1:
+				sock1.close()
+			if sock2:
+				sock2.close()
+			sock1 = None
+			sock2 = None
+			time.sleep(config["ping"])
+	return [sock1, sock2]
+
+def chk_ping(pacote, link):
+	if pacote == "vmonitor:p%d" % link:
+		return 1
+	else:
+		msg("Pacote conteudo alien (Ping): %s" % pacote, 1)
+
+def is_main(pacote, link):
+	if pacote == "vmonitor:u%d1" % link:
+		return 1
+	else:
+		return 0
+
+def chk_main(pacote, link):
+	if pacote == "vmonitor:u%d1" % link:
+		return 1
+	elif pacote == "vmonitor:u%d0" % link:
+		return 1
+	else:
+		msg("Pacote conteudo alien (Main): %s" % pacote, 1)
+		return 0
+
+def do_script(status):
+	script = {LINK1_LINK2: config["link1_link2_script"], LINK1: config["link1_script"], \
+		  LINK2: config["link2_script"], NOLINK: config["nolink_script"]}[status]
+	msg("Running script %s " % script, 1)
+	os.system(script)
+
+def server():
+	socks = Bind(config["link1_server"], config["link2_server"])
+	pingtime = otimer()
+	pingtime.start(0)
+	hysteresis = otimer()
+	link1_timeout = otimer()
+	link2_timeout = otimer()
+	heartbeat = otimer()
+	heartbeat.start(2*3600)
+	hysteresis.start(config["hysteresis"])
+	link1_timeout.start(config["hysteresis"] / 3)
+	link2_timeout.start(config["hysteresis"] / 3)
+	is_link1_main = 1
+	is_link2_main = 0
+	status = LINK1_LINK2
+	while 1:
+		msg("Status: %s st %d %d to %d %d"  % (status, is_link1_main, is_link2_main, \
+				link1_timeout.done(), link2_timeout.done()))
+
+		if heartbeat.done():
+			msg("Heartbeat", 1)
+			heartbeat.start(2*3600)
+
+		if pingtime.done():
+			try:
+				socks[0].sendto("vmonitor:p1", 0, (config["link1_client"], \
+									config["port"]))
+				pingtime.start(config["ping"])
+			except socket.error:
+				msg("erro sendto %s" % config["link1_client"], 1)
+				pass
+			try:
+				socks[1].sendto("vmonitor:p2", 0 ,(config["link2_client"], \
+									config["port"]))
+				pingtime.start(config["ping"])
+			except socket.error:
+				msg("erro sendto %s" % config["link2_client"], 1)
+				pass
+		try:
+			rd, wr, ex = select.select(socks, [], [], 1)
+		except socket.error, (errno, strerror):
+			msg("Erro em select: %s " % strerror, 1)
+			# probably one of the bind addressess was down
+			# Linux seems not to kill socket even though interface is down
+			for sock in socks:
+				sock.close()
+			socks = Bind(config["link1_server"], config["link2_server"])
+			continue
+		for sock in rd:
+			try:
+				data, addr = sock.recvfrom(512)
+				msg("Recebido pacote %s" % data)
+			except socket.error:
+				msg("Erro recvfrom", 1)
+				continue
+			if addr[0] == config["link1_client"]:
+				if chk_main(data, 1) == 1:
+					link1_timeout.start(config["hysteresis"] / 3)
+					is_link1_main = is_main(data, 1)	
+			elif addr[0] == config["link2_client"]:
+				if chk_main(data, 2) == 1:
+					link2_timeout.start(config["hysteresis"] / 3)
+					is_link2_main = is_main(data, 2)	
+			else:
+				msg("Alien packet: %s " % addr[0], 1)
+
+		if link1_timeout.done():
+			is_link1_main = 0
+
+		if link2_timeout.done():
+			is_link2_main = 0
+
+		to = link1_timeout.done() + 2*link2_timeout.done()
+
+		newstatus = [LINK1_LINK2, LINK2, LINK1, NOLINK][to]
+	
+		# if newstdatus == LINK1_LINK2 and is_link1_main == 0 and is_link2_main == 1:
+		#	we respect client decision
+		#	client will probably go to LINK1_LINK2 soon
+		# 	newstatus = LINK2
+
+		if newstatus != status:
+			if hysteresis.done():
+				status = newstatus
+				msg("Novo status: %s" % status, 2)
+				do_script(status)
+				hysteresis.start(config["hysteresis"])
+			else:
+				# wait until hysteresis is done
+				pass
+		else:
+			# everything the same, recharge hysteresis
+			hysteresis.start(config["hysteresis"])
+
+def client():
+	socks = Bind(config["link1_client"], config["link2_client"])
+	pingtime = otimer()
+	pingtime.start(0)
+	hysteresis = otimer()
+	link1_timeout = otimer()
+	link2_timeout = otimer()
+	heartbeat = otimer()
+	heartbeat.start(2*3600)
+	hysteresis.start(config["hysteresis"])
+	link1_timeout.start(config["hysteresis"] / 3)
+	link2_timeout.start(config["hysteresis"] / 3)
+	status = LINK1_LINK2
+	while 1:
+		if heartbeat.done():
+			msg("Heartbeat", 1)
+			heartbeat.start(2*3600)
+
+		is_link1_main = is_link2_main = 0
+		if status == LINK1_LINK2 or status == LINK1:
+			is_link1_main = 1
+		elif status == LINK2:
+			is_link2_main = 1
+
+		msg("Status: %s st %d %d to %d %d" % (status, is_link1_main, is_link2_main, \
+						link1_timeout.done(), link2_timeout.done()))
+		if pingtime.done():
+			try:
+				if not link1_timeout.done():
+					socks[0].sendto("vmonitor:u1%d" % is_link1_main, 0, \
+						(config["link1_server"], config["port"]))
+			except socket.error:
+				msg("error sendto %s" % config["link1_server"], 1)
+				pass
+			try:
+				if not link2_timeout.done():
+					socks[1].sendto("vmonitor:u2%d" % is_link2_main, 0, \
+						(config["link2_server"], config["port"]))
+			except socket.error:
+				msg("error sendto %s" % config["link2_server"], 1)
+				pass
+
+			pingtime.start(config["ping"])
+		try:
+			rd, wr, ex = select.select(socks, [], [], 1)
+		except socket.error, (errno, strerror):
+			msg("Error in select: %s" % strerror, 1)
+			# probably one of the bind addressess was down
+			# Linux seems not to kill socket even though interface is down
+			for sock in socks:
+				sock.close()
+			socks = Bind(config["link1_client"], config["link2_client"])
+			continue
+		for sock in rd:
+			try:
+				data, addr = sock.recvfrom(512)
+				msg("Received packet %s" % data)
+			except socket.error:
+				msg("Error recvfrom", 1)
+				continue
+			if addr[0] == config["link1_server"] and chk_ping(data, 1) == 1:
+				link1_timeout.start(config["hysteresis"] / 3)
+			elif addr[0] == config["link2_server"] and chk_ping(data, 2) == 1:
+				link2_timeout.start(config["hysteresis"] / 3)
+			else:
+				msg("Alien packet: %s" % addr[0], 1)
+
+		to = link1_timeout.done() + 2*link2_timeout.done()
+
+		newstatus = [LINK1_LINK2, LINK2, LINK1, NOLINK][to]
+
+		if newstatus != status:
+			if hysteresis.done():
+				status = newstatus
+				msg("New status: %s" % status, 1)
+				do_script(status)
+				hysteresis.start(config["hysteresis"])
+			else:
+				# wait until hysteresis is done
+				pass
+		else:
+			# everything the same, recharge hysteresis
+			hysteresis.start(config["hysteresis"])
+
+if __name__ == '__main__':
+	for arg in sys.argv:
+		if arg == "server":
+			config["persona"] = "server"
+		elif arg == "client":
+			config["persona"] = "client"
+		elif arg == "debug":
+			config["debug"] = 1
+		elif arg == "nodebug":
+			config["debug"] = 0
+
+	if config["debug"] == 0:
+		background()
+		pass
+
+	msg("This is vmonitor, persona = %s, debug = %d" % (config["persona"], config["debug"]), 1)
+	msg("Default (expected) status is LINK1_LINK2", 1);
+
+	if config["persona"] == "server":
+		server()
+	else:
+		client()
+

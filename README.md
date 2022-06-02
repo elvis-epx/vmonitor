@@ -26,7 +26,7 @@ In the original use case, both routers at both sides were expected to change
 routing policies in tandem, in order to keep an enterprise VPN running. That's why the
 config file is supposed to be the same for both client and server.
 
-Another (maybe more common) use case is: multihomed client, and a server running
+Another (perhaps more common) use case is: multihomed client, and a server running
 in the cloud as "beacon" (more trustworthy than pinging google.com or gnu.org).
 Only the client side should actually react to network changes. You still can use
 the same config file for both sides, but supply no-op scripts for the server.
