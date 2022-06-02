@@ -97,6 +97,17 @@ class TratadorDatagrama(Handler):
         self.observer.error_callback(link)
 
 
+class MyEventLoop(EventLoop):
+    def __init__(self, observer):
+        self.observer = observer
+
+    def started_cycle(self):
+        self.observer.started_cycle()
+
+    def before_select(self, crd, cwr, cex, next_to, to_label):
+        self.observer.before_select(crd, cwr, cex, next_to, to_label)
+
+
 class vmonitor:
     def __init__(self, config):
         self.config = config
@@ -127,7 +138,7 @@ class vmonitor:
 
     def heartbeat_cb(self):
         Log.info("Heartbeat")
-        self.heartbeat = Timeout(None, "heartbeat", self.config["heartbeat"], self.heartbeat_cb)
+        self.heartbeat.restart()
 
     def ping(self, link):
         if not self.peer[link]:
@@ -155,7 +166,7 @@ class vmonitor:
         to = self.config["pingavg"] + \
              self.config["pingvar"] * 2 * (random.random() - 0.5)
 
-        self.pingtime = Timeout(None, "ping", to, self.pingtime_cb)
+        self.pingtime.reset(to)
 
     def handle_link_change(self):
         if not self.hysteresis.expired():
@@ -175,15 +186,13 @@ class vmonitor:
         self.status = newstatus
         Log.warn("New status: %s" % self.status)
         do_script(self.status)
-        self.hysteresis = Timeout(None, "hysteresis", self.config["hysteresis"], self.handle_link_change)
+        self.hysteresis.reset(self.config["hysteresis"])
 
     def run(self):
-        eventloop = EventLoop()
-        eventloop.pre_gather_callback(self.pre_gather)
-        eventloop.pre_select_callback(self.pre_select)
+        eventloop = MyEventLoop(self)
         eventloop.loop()
 
-    def pre_gather(self):
+    def started_cycle(self):
         if self.handlers:
             return
 
@@ -194,8 +203,7 @@ class vmonitor:
         t2 = TratadorDatagrama(self, 2, socks[1])
         self.handlers = [t1, t2]
 
-
-    def pre_select(self, crd, cwr, cex, next_to, to_label):
+    def before_select(self, crd, cwr, cex, next_to, to_label):
         Log.debug("Status %s to1 %d/%d to2 %d/%d hys %d ping %d next %d" % \
             (self.status,
             self.plink_timeout[1].remaining(), self.clink_timeout[1].remaining(),
@@ -221,12 +229,7 @@ class vmonitor:
             Log.error("Packet for link %d came via link %d" % (link, recv_link))
             return
     
-        if self.plink_timeout[link]:
-            self.plink_timeout[link].cancel()
-            
-        self.plink_timeout[link] = \
-            Timeout(None, "plinkto%d" % link, config["timeout"],
-                    self.handle_link_change)
+        self.plink_timeout[link].restart()
 
         if not self.peer_fixed and self.peer[link] != addr:
             self.peer[link] = addr
@@ -240,14 +243,7 @@ class vmonitor:
 
         elif response == self.our_challenge[link]:
             Log.debug("Good response %s" % response)
-
-            if self.clink_timeout[link]:
-                self.clink_timeout[link].cancel()
-
-            self.clink_timeout[link] = \
-                Timeout(None, "clinkto%d" % link, config["ctimeout"],
-                    self.handle_link_change)
-
+            self.clink_timeout[link].restart()
             self.our_challenge[link] = "None"
         else:
             Log.debug("Wrong response exp %s got %s" % \
