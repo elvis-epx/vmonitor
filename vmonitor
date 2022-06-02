@@ -124,7 +124,7 @@ class vmonitor:
             self.peer_fixed = False
             self.peer = [None, None, None]
 
-        self.heartbeat = Timeout(None, "heartbeat", config["heartbeat"], self.heartbeat_cb)
+        hb = Timeout(None, "heartbeat", config["heartbeat"], self.heartbeat_cb)
         self.pingtime = Timeout(None, "ping", 5, self.pingtime_cb)
         self.hysteresis = Timeout(None, "hysteresis", 5, self.handle_link_change)
 
@@ -136,9 +136,9 @@ class vmonitor:
         self.plink_timeout = [None, p1, p2]
         self.clink_timeout = [None, c1, c2]
 
-    def heartbeat_cb(self):
+    def heartbeat_cb(self, to_obj):
         Log.info("Heartbeat")
-        self.heartbeat.restart()
+        to_obj.restart()
 
     def ping(self, link):
         if not self.peer[link]:
@@ -159,16 +159,16 @@ class vmonitor:
             Log.error("error sendto %d" % link, 1)
             pass
 
-    def pingtime_cb(self):
+    def pingtime_cb(self, to_obj):
         for link in (1, 2):
             self.ping(link)
 
         to = self.config["pingavg"] + \
              self.config["pingvar"] * 2 * (random.random() - 0.5)
 
-        self.pingtime.reset(to)
+        to_obj.reset(to)
 
-    def handle_link_change(self):
+    def handle_link_change(self, _):
         if not self.hysteresis.expired():
             return    
 
@@ -249,7 +249,7 @@ class vmonitor:
             Log.debug("Wrong response exp %s got %s" % \
                 (response, self.our_challenge[link]))
     
-        self.handle_link_change()
+        self.handle_link_change(None)
 
 
 def usage():
