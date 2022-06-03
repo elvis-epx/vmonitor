@@ -124,14 +124,14 @@ class vmonitor:
             self.peer_fixed = False
             self.peer = [None, None, None]
 
-        hb = Timeout(None, "heartbeat", config["heartbeat"], self.heartbeat_cb)
-        self.pingtime = Timeout(None, "ping", 5, self.pingtime_cb)
-        self.hysteresis = Timeout(None, "hysteresis", 5, self.handle_link_change)
+        hb = Timeout.new("heartbeat", config["heartbeat"], self.heartbeat_cb)
+        self.pingtime = Timeout.new("ping", 5, self.pingtime_cb)
+        self.hysteresis = Timeout.new("hysteresis", 5, self.handle_link_change)
 
-        p1 = Timeout(None, "plinkto1", config["timeout"], self.handle_link_change)
-        p2 = Timeout(None, "plinkto2", config["timeout"], self.handle_link_change)
-        c1 = Timeout(None, "clinkto1", config["ctimeout"], self.handle_link_change)
-        c2 = Timeout(None, "clinkto2", config["ctimeout"], self.handle_link_change)
+        p1 = Timeout.new("plinkto1", config["timeout"], self.handle_link_change)
+        p2 = Timeout.new("plinkto2", config["timeout"], self.handle_link_change)
+        c1 = Timeout.new("clinkto1", config["ctimeout"], self.handle_link_change)
+        c2 = Timeout.new("clinkto2", config["ctimeout"], self.handle_link_change)
 
         self.plink_timeout = [None, p1, p2]
         self.clink_timeout = [None, c1, c2]
@@ -169,16 +169,16 @@ class vmonitor:
         to_obj.reset(to)
 
     def handle_link_change(self, _):
-        if not self.hysteresis.expired():
+        if self.hysteresis.alive():
             return    
 
-        link1_down = self.plink_timeout[1].expired() or self.clink_timeout[1].expired()
-        link1_down = link1_down and 1 or 0
-        link2_down = self.plink_timeout[2].expired() or self.clink_timeout[2].expired()
-        link2_down = link2_down and 1 or 0
-        to = link1_down + 2 * link2_down
+        link1_up = self.plink_timeout[1].alive() and self.clink_timeout[1].alive()
+        link1_up = link1_up and 1 or 0
+        link2_up = self.plink_timeout[2].alive() and self.clink_timeout[2].alive()
+        link2_up = link2_up and 2 or 0
+        to = link1_up + link2_up
 
-        newstatus = ["LINK1_LINK2", "LINK2", "LINK1", "NOLINK"][to]
+        newstatus = ["NOLINK", "LINK1", "LINK2", "LINK1_LINK2"][to]
 
         if newstatus == self.status:
             return
