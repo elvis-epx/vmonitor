@@ -93,16 +93,10 @@ class TratadorDatagrama(Handler):
             return
         self.observer.recv_callback(self.link, addr, data)
 
-    def exception_callback(self):
-        self.observer.error_callback(link)
-
 
 class MyEventLoop(EventLoop):
     def __init__(self, observer):
         self.observer = observer
-
-    def started_cycle(self):
-        self.observer.started_cycle()
 
     def before_select(self, crd, cwr, cex, next_to, to_label):
         self.observer.before_select(crd, cwr, cex, next_to, to_label)
@@ -111,7 +105,6 @@ class MyEventLoop(EventLoop):
 class vmonitor:
     def __init__(self, config):
         self.config = config
-        self.handlers = []
         self.our_challenge = [None, "None", "None"]
         self.their_challenge = [None, "None", "None"]
         self.status = "xxx"
@@ -135,6 +128,14 @@ class vmonitor:
 
         self.plink_timeout = [None, p1, p2]
         self.clink_timeout = [None, c1, c2]
+
+        socks = Bind(self.config["link1_%s" % self.config["persona"]], \
+                    self.config["link2_%s" % self.config["persona"]])
+
+        t1 = TratadorDatagrama(self, 1, socks[0])
+        t2 = TratadorDatagrama(self, 2, socks[1])
+
+        self.handlers = [t1, t2]
 
     def heartbeat_cb(self, to_obj):
         Log.info("Heartbeat")
@@ -192,31 +193,12 @@ class vmonitor:
         eventloop = MyEventLoop(self)
         eventloop.loop()
 
-    def started_cycle(self):
-        if self.handlers:
-            return
-
-        socks = Bind(self.config["link1_%s" % self.config["persona"]], \
-                    self.config["link2_%s" % self.config["persona"]])
-
-        t1 = TratadorDatagrama(self, 1, socks[0])
-        t2 = TratadorDatagrama(self, 2, socks[1])
-        self.handlers = [t1, t2]
-
     def before_select(self, crd, cwr, cex, next_to, to_label):
         Log.debug("Status %s to1 %d/%d to2 %d/%d hys %d ping %d next %d" % \
             (self.status,
             self.plink_timeout[1].remaining(), self.clink_timeout[1].remaining(),
             self.plink_timeout[2].remaining(), self.clink_timeout[2].remaining(),
             self.hysteresis.remaining(), self.pingtime.remaining(), next_to))
-
-    def error_callback(self, link):
-        Log.error("Socket error in link %d" % link)
-        # probably one of the bind addressess was down
-        # Linux seems not to kill socket even though interface is down
-        [ handler.destroy() for handler in self.handlers ]
-        # Force EventLoop.pre_gather() callback to recreate sockets
-        self.handlers = []
 
     def recv_callback(self, recv_link, addr, data):
         info = parse_packet(data)
