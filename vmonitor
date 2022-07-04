@@ -4,7 +4,7 @@
 
 import time, sys, os, datetime, hmac, random, configparser
 from myeventloop import Log, background
-from udpserver import *
+from myeventloop.udpserver import *
 
 config = {}
 
