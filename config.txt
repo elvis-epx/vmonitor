@@ -24,6 +24,12 @@ ctimeout = 135
 hysteresis = 300
 heartbeat = 3600
 
+; initial_hysteresis: time between start and call first script
+; May be useful to wait until the system network is 100% configured
+; before starting to monitor links and tweak with routes
+
+initial_hysteresis = 60
+
 ; Scripts to run when state changes. None if no script
 ; If only one side (client or server) needs to do something about
 ; a link status change, create no-op scripts at the other side.
@@ -32,6 +38,17 @@ link1_link2_script = None
 link2_script = None
 link1_script = None
 nolink_script = None
+
+; hard_heartbeat: if higher than 0, calls again the script related to the
+; current link status after the set time. If set, make sure the scripts are
+; idempotent, that is, the same script can be called repeatedly without
+; messing your network.
+;
+; This feature is useful if you (also) use the link scripts as hooks for
+; observability e.g. reporting the network status using MQTT. Periodic 
+; MQTT messages serve to indicate the system is healthy.
+
+hard_heartbeat = 0
 
 ; Secret key used to sign ping packets with HMAC
 

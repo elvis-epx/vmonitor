@@ -48,6 +48,10 @@ def parse_packet(data):
     return _parse_packet(data, config["secret"])
 
 def do_script(status):
+    if status == "undefined":
+        Log.error("Cannot run script in undefined state")
+        return
+
     script = {"LINK1_LINK2": config["link1_link2_script"], "LINK1": config["link1_script"], \
           "LINK2": config["link2_script"], "NOLINK": config["nolink_script"]}[status]
     if script != "None":
@@ -80,7 +84,7 @@ class vmonitor:
         self.config = config
         self.our_challenge = [None, "None", "None"]
         self.their_challenge = [None, "None", "None"]
-        self.status = "xxx"
+        self.status = "undefined"
 
         if config["persona"] == "client":
             self.peer_fixed = True
@@ -91,8 +95,12 @@ class vmonitor:
             self.peer = [None, None, None]
 
         hb = Timeout.new("heartbeat", config["heartbeat"], self.heartbeat_cb)
+        if config["hard_heartbeat"] > 0:
+            self.hard_heartbeat = Timeout.new("hard_heartbeat", config["hard_heartbeat"], self.hard_heartbeat_cb)
+        else:
+            self.hard_heartbeat = None
         self.pingtime = Timeout.new("ping", 5, self.pingtime_cb)
-        self.hysteresis = Timeout.new("hysteresis", 5, self.handle_link_change)
+        self.hysteresis = Timeout.new("hysteresis", config["initial_hysteresis"], self.handle_link_change)
 
         p1 = Timeout.new("plinkto1", config["timeout"], self.handle_link_change)
         p2 = Timeout.new("plinkto2", config["timeout"], self.handle_link_change)
@@ -110,6 +118,11 @@ class vmonitor:
     def heartbeat_cb(self, to_obj):
         Log.info("Heartbeat")
         to_obj.restart()
+
+    def hard_heartbeat_cb(self, _):
+        Log.info("Hard heartbeat")
+        do_script(self.status)
+        self.hard_heartbeat.restart()
 
     def ping(self, link):
         if not self.peer[link]:
@@ -154,6 +167,8 @@ class vmonitor:
         Log.warn("New status: %s" % self.status)
         do_script(self.status)
         self.hysteresis.reset(self.config["hysteresis"])
+        if self.hard_heartbeat:
+            self.hard_heartbeat.restart()
 
     def run(self):
         eventloop = MyEventLoop(self)
@@ -269,7 +284,7 @@ def parse_config():
         print("If either of mailfrom or mailto is None, both must be None")
         usage()
     
-    for name in ('pingavg', 'timeout', 'ctimeout', 'hysteresis', 'heartbeat'):
+    for name in ('pingavg', 'timeout', 'ctimeout', 'hysteresis', 'heartbeat', 'initial_hysteresis', 'hard_heartbeat'):
         prechki(name, cfg)
         try:
             config[name] = int(cfg[name])
