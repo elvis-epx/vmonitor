@@ -1,0 +1,3 @@
+#!/bin/bash -x
+
+echo "link1_link2_script"

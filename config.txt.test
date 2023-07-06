@@ -1,0 +1,66 @@
+[vmonitor]
+
+; Bind addresses. Must be all different
+; link1_client exchanges packets with link1_server only
+; the same for link2_*
+
+link1_server = 127.0.0.1:55000
+link2_server = 127.0.0.1:55001
+link1_client = 127.0.0.1:55002
+link2_client = 127.0.0.1:55003
+
+; pingavg: average link ping time
+; pingvar: fudge factor of ping time
+; timeout: link is down if no pings after this time
+; ctimeout: didn't get response to our challenge token
+; hysteresis: minimum time between state transitions
+; heartbeat: log mark just to show that app is still running
+; all times in seconds
+
+pingavg = 2
+pingvar = 1
+timeout = 8
+ctimeout = 10
+hysteresis = 60
+heartbeat = 120
+
+; initial_hysteresis: time between start and call first script
+; May be useful to wait until the system network is 100% configured
+; before starting to monitor links and tweak with routes
+
+initial_hysteresis = 60
+
+; Scripts to run when state changes. None if no script
+; If only one side (client or server) needs to do something about
+; a link status change, create no-op scripts at the other side.
+
+link1_link2_script = ./link1_link2_script
+link2_script = ./link2_script
+link1_script = ./link1_script
+nolink_script = ./nolink_script
+
+; hard_heartbeat: if higher than 0, calls again the script related to the
+; current link status after the set time. If set, make sure the scripts are
+; idempotent, that is, the same script can be called repeatedly without
+; messing your network.
+;
+; This feature is useful if you (also) use the link scripts as hooks for
+; observability e.g. reporting the network status using MQTT. Periodic 
+; MQTT messages serve to indicate the system is healthy.
+
+hard_heartbeat = 120
+
+; Secret key used to sign ping packets with HMAC
+
+secret = abracadabra
+
+; loglevel (3=debug, 2=info, 1=warn, 0=error)
+; maillevel (same thing, maximum 2=info)
+; mailto: recipient of automatic e-mails
+; mailfrom: putative sender of e-mails
+
+logfile = None
+loglevel = 3
+maillevel = 1
+mailfrom = None
+mailto = None
