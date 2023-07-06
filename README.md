@@ -129,3 +129,45 @@ use cases in which the client is behind a NAT and/or has dynamic IP. This is
 not a security problem since only valid packets (with correct HMAC, etc.) are
 considered.
 
+## How to run as a service
+
+One option is to call it from `/etc/rc.local` with the `daemon` parameter. The
+app puts itself in background and redirects logging to the file configured in
+`config.txt`. This is how we used this program 20 years ago.
+
+A better, modern option is to use `systemctl`. Create the file `/etc/systemd/system/vmonitor.service`
+with contents similar to the example below:
+
+```
+[Unit]
+Wants=network.target
+
+[Service]
+ExecStart=/etc/vmonitor/vmonitor /etc/vmonitor/config.txt client
+User=root
+Group=root
+Restart=always
+RestartSec=60
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Note the example above assumes you have copied the `vmonitor` project to the folder `/etc/vmonitor`.
+Make sure to use absolute paths for the scripts pointed by `config.txt`. Also, make sure you replace
+`client` by `server` at the server side.
+
+Then, enable and start the service:
+
+```
+# systemctl enable vmonitor
+# systemctl start vmonitor
+```
+
+Advantages of using systemctl: automatic monitoring/restarting of the service, and logging is taken
+care of without having to mess with `syslogd` configuration. To check the log, look at `/var/log/syslog`
+or use a command similar to
+
+```
+journalctl -u vmonitor.service -f
+```
