@@ -8,12 +8,21 @@ import (
 )
 
 type Timeout struct {
-    tot time.Duration
+    to time.Duration
+    impl *time.Timer
+    ch chan string
 }
 
-func (t Timeout) start(ch chan string) {
-    time.Sleep(t.tot)
-    ch <- "timeout"
+func NewTimeout(to time.Duration, ch chan string) (Timeout) {
+    timeout := Timeout{to, nil, ch}
+    timeout.start()
+    return timeout
+}
+
+func (timeout Timeout) start() {
+    timeout.impl = time.AfterFunc(timeout.to, func() {
+        timeout.ch <- "timeout"
+    })
 }
 
 func readudp(conn *net.UDPConn, ch chan string) {
@@ -53,7 +62,6 @@ func main() {
 		os.Exit(1)
 	}
 
-
     // Bind to UDP
 	conn, err := net.ListenUDP("udp", udpLocalAddr)
 
@@ -71,8 +79,7 @@ func main() {
 	}
 
     ch := make(chan string)
-    to := Timeout{5 * time.Second}
+    NewTimeout(5 * time.Second, ch)
     go readudp(conn, ch)
-    go to.start(ch)
     <-ch
 }
