@@ -1,9 +1,9 @@
 package main
 
 import (
-	"fmt"
-	"net"
-	"os"
+    "fmt"
+    "net"
+    "os"
     "time"
     "log"
     "strings"
@@ -13,6 +13,7 @@ import (
     "encoding/hex"
     "github.com/ncruces/go-strftime"
     "math/rand/v2"
+    "os/exec"
 )
 
 const link1_server = "127.0.0.1:55000"
@@ -24,18 +25,19 @@ var client = []string {link1_client, link2_client}
 
 const pingavg = 20
 const pingvar = 10
-const timeout = 90
-const ctimeout = 135
-const hysteresis = 300
-const heartbeat = 3600 // FIXME use it
+const timeout = 60
+const ctimeout = 90
+const hysteresis = 90
 const initial_hysteresis = 60
 
-const link1_link2_script = "" // FIXME use it
-const link2_script = "" // FIXME use it
-const link1_script = "" // FIXME use it
-const nolink_script = "" // FIXME use it
+const heartbeat = 3600
+const hard_heartbeat = 600
 
-const hard_heartbeat = 0 // FIXME use it
+const link1_link2_script = "./link1_link2_script"
+const link2_script = "./link2_script"
+const link1_script = "./link1_script"
+const nolink_script = "./nolink_script"
+var state_scripts = []string {nolink_script, link1_script, link2_script, link1_link2_script}
 
 const secret = "abracadabra"
 
@@ -117,7 +119,7 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
     sdata := string(bdata)
     data := strings.Fields(sdata)
     if len(data) != 5 {
-        log.Print("Invalid packet format ", data)
+        log.Print(link, "> Invalid packet format ", data)
         return "", "" 
     }
 
@@ -128,35 +130,35 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
     hmac := data[4]
 
     if their_link != "1" && their_link != "2" {
-        log.Print("Bad link number ", their_link)
+        log.Print(link, "> Bad link number ", their_link)
         return "", "" 
     }
 
     ilink, _ := strconv.Atoi(their_link)
     if ilink != link {
-        log.Print("Unexpected link number ", their_link, " ours is ", link)
+        log.Print(link, "> Unexpected link number ", their_link, " ours is ", link)
         return "", "" 
     }
 
     tmp := fmt.Sprintf("%s %s %s %s ", their_link, their_time, challenge, response)
     exp_hmac := gen_hmac([]byte(tmp), key)
     if exp_hmac != hmac {
-        log.Print("Inconsistent HMAC")
+        log.Print(link, "> Inconsistent HMAC")
         return "", "" 
     }
     
-    log.Print("Received ", tmp)
+    log.Print(link, "> Received ", tmp)
 
     their_time_parsed, err := strftime.Parse("%Y-%m-%dT%H:%M:%S", their_time)
     if err != nil {
-        log.Print("Date parsing error: ", err)
+        log.Print(link, "> Date parsing error: ", err)
         return "", "" 
     }
 
     now := time.Now().UTC()
     diff := their_time_parsed.Sub(now)
     if diff.Seconds() > 120 {
-        log.Print("Skewed date/time, here ", now, " theirs ", their_time)
+        log.Print(link, "> Skewed date/time, here ", now, " theirs ", their_time)
         return "", "" 
     }
 
@@ -167,35 +169,46 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
 
 var our_challenge = []string {"None", "None"}
 var their_challenge = []string {"None", "None"}
+var peer_addrs = []*net.UDPAddr {nil, nil}
+var persona = "client"
 
 // UDP packet receiver
+
+func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
+    return addr1.Port == addr2.Port && addr1.IP.Equal(addr2.IP)
+}
 
 func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Event, msg string) {
     for {
         data := make([]byte, 1500, 1500)
-        length, _, err := conn.ReadFromUDP(data[0:])
+        length, addr, err := conn.ReadFromUDP(data[0:])
         if err != nil {
             log.Fatal(err)
         }
-        log.Print("recv packet")
+        log.Print(msg)
         challenge, response := parse_packet(link, []byte(secret), data[0:length])
         if challenge == "" || response == "" {
             continue
         }
 
-        // FIXME detect peer addr
+        if persona == "server" {
+            if peer_addrs[link-1] == nil || !eq_addr(peer_addrs[link-1], addr) {
+                peer_addrs[link-1] = addr
+                log.Print(link, "> Detected new peer addr: ", addr)
+            }
+        }
 
         to.restart()
         their_challenge[link-1] = challenge
 
         if our_challenge[link-1] == "None" {
-            log.Print("Not evaluating response")
+            log.Print(link, "> Not evaluating response")
         } else if response == our_challenge[link-1] {
-            log.Print("Good response")
+            log.Print(link, "> Good response")
             cto.restart()
             our_challenge[link-1] = "None"
         } else {
-            log.Print("Wrong response")
+            log.Print(link, "> Wrong response")
         }
 
         ch <- Event{msg}
@@ -204,31 +217,38 @@ func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Eve
 
 // UDP packet sender
 
-func sendudp(link int, conn *net.UDPConn, addr *net.UDPAddr) {
+func sendudp(link int, conn *net.UDPConn) {
     for {
         if our_challenge[link-1] == "None" {
             our_challenge[link-1] = fmt.Sprintf("%x", rand.Int32())
         }
         packet := gen_packet(link, []byte(secret), our_challenge[link-1], their_challenge[link-1]) 
-	    _, err := conn.WriteToUDP(packet, addr)
-	    if err != nil {
-            log.Print(err) // non-fatal
-	    } else {
-	        log.Print("Link ", link, " sent ", string(packet))
+
+        addr := peer_addrs[link-1]
+        if addr != nil {
+            _, err := conn.WriteToUDP(packet, addr)
+            if err != nil {
+                log.Print(err) // non-fatal
+            } else {
+                log.Print("Link ", link, " sent ", string(packet))
+            }
+        } else {
+            log.Print("Link  ", link, ": peer address still unknown")
         }
+
         sleep := pingavg + 2 * pingvar * (rand.Float32() - 0.5)
         time.Sleep(time.Duration(sleep * 1000) * time.Millisecond) 
     }
 }
 
 func main() {
-	if len(os.Args) < 2 || (os.Args[1] != "client" && os.Args[1] != "server") {
-		log.Fatal("Usage: vmonitor <client|server>")
-	}
+    if len(os.Args) < 2 || (os.Args[1] != "client" && os.Args[1] != "server") {
+        log.Fatal("Usage: vmonitor <client|server>")
+    }
 
     var local []string
     var remote []string
-    var persona = os.Args[1]
+    persona = os.Args[1]
 
     if persona == "client" {
         local = client
@@ -238,47 +258,52 @@ func main() {
         remote = client
     }
         
-	localaddr1, err := net.ResolveUDPAddr("udp", local[0])
+    localaddr1, err := net.ResolveUDPAddr("udp", local[0])
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	localaddr2, err := net.ResolveUDPAddr("udp", local[1])
+    localaddr2, err := net.ResolveUDPAddr("udp", local[1])
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	remoteaddr1, err := net.ResolveUDPAddr("udp", remote[0])
+    remoteaddr1, err := net.ResolveUDPAddr("udp", remote[0])
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	remoteaddr2, err := net.ResolveUDPAddr("udp", remote[1])
+    remoteaddr2, err := net.ResolveUDPAddr("udp", remote[1])
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	socket1, err := net.ListenUDP("udp", localaddr1)
+    if persona == "client" {
+        peer_addrs[0] = remoteaddr1
+        peer_addrs[1] = remoteaddr2
+    }
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    socket1, err := net.ListenUDP("udp", localaddr1)
 
-	socket2, err := net.ListenUDP("udp", localaddr2)
+    if err != nil {
+        log.Fatal(err)
+    }
 
-	if err != nil {
-		log.Fatal(err)
-	}
+    socket2, err := net.ListenUDP("udp", localaddr2)
+
+    if err != nil {
+        log.Fatal(err)
+    }
 
     ch := make(chan Event)
 
     // standalone goroutines that send beacon packets
-    go sendudp(1, socket1, remoteaddr1)
-    go sendudp(2, socket2, remoteaddr2)
+    go sendudp(1, socket1)
+    go sendudp(2, socket2)
 
     // timeouts for packet reception
     to1 := NewTimeout(timeout * time.Second, ch, "timeout1")
@@ -288,14 +313,23 @@ func main() {
     cto1 := NewTimeout(ctimeout * time.Second, ch, "ctimeout1")
     cto2 := NewTimeout(ctimeout * time.Second, ch, "ctimeout2")
 
+    // heartbeats
+    heartbeat_timer := NewTimeout(heartbeat * time.Second, ch, "heartbeat")
+    var hard_heartbeat_timer *Timeout = nil
+    if hard_heartbeat > 0 {
+        hard_heartbeat_timer = NewTimeout(hard_heartbeat * time.Second, ch, "hard_heartbeat")
+    }
+
     // state change hysteresis
-    hys := NewTimeout(initial_hysteresis * time.Second, ch, "hysteresis")
+    hysteresis_timer := NewTimeout(initial_hysteresis * time.Second, ch, "hysteresis")
 
     // goroutines that receive beacon packets from remote side
     go readudp(socket1, 1, to1, cto1, ch, "recv1")
     go readudp(socket2, 2, to2, cto2, ch, "recv2")
 
     var current_state = "undefined"
+
+    // Main event loop
 
     for {
         event := <-ch;
@@ -304,15 +338,16 @@ func main() {
                     "/", int(cto1.remaining().Seconds()),
                     " to2 ", int(to2.remaining().Seconds()),
                     "/", int(cto2.remaining().Seconds()),
-                    " hys ", int(hys.remaining().Seconds()),
+                    " hys ", int(hysteresis_timer.remaining().Seconds()),
                     " event ", event.name)
 
-        if hys.alive() {
+        heartbeat_timer.restart()
+
+        if hysteresis_timer.alive() {
             continue
         }
 
-        // FIXME handle hard_heartbeat
-
+        // determine whether links are up or down based on packet recv timeouts
         link1_up := to1.alive() && cto1.alive()
         link2_up := to2.alive() && cto2.alive()
 
@@ -325,14 +360,28 @@ func main() {
         }
 
         new_state := []string{"NOLINK", "LINK1", "LINK2", "LINK1_LINK2"}[i]
+        new_state_script := state_scripts[i]
 
-        if new_state == current_state {
+        if new_state != current_state {
+            current_state = new_state
+            log.Print("New state: ", current_state)
+        } else if hard_heartbeat_timer != nil && !hard_heartbeat_timer.alive() {
+            log.Print("Reapply state: ", current_state)
+            hard_heartbeat_timer.restart()
+        } else {
             continue
         }
 
-        current_state = new_state
-        log.Print("New state: ", current_state)
-        // FIXME run script
-        hys.reset(hysteresis * time.Second)
+        if new_state_script != "" {
+            log.Print("> Running state script")
+            cmd := exec.Command("/bin/bash", "-c", new_state_script) 
+            if err := cmd.Run(); err != nil {
+                log.Print("> Script execution error: ", err)
+            }
+        } else {
+            log.Print("> No script configured for state")
+        }
+
+        hysteresis_timer.reset(hysteresis * time.Second)
     }
 }

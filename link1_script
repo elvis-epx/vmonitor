@@ -1,3 +1,3 @@
 #!/bin/bash -x
 
-echo "link1_script"
+echo "link1_script" | tee moo

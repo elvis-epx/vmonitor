@@ -1,3 +1,3 @@
 #!/bin/bash -x
 
-echo "nolink_script"
+echo "nolink_script" | tee moo
