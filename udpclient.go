@@ -6,6 +6,8 @@ import (
 	"os"
     "time"
     "log"
+    "strings"
+    "strconv"
     "crypto/hmac"
     "crypto/sha256"
     "encoding/hex"
@@ -54,8 +56,9 @@ type Timeout struct {
     eta time.Time
 }
 
-func NewTimeout(to time.Duration, ch chan Event, msg string) (Timeout) {
-    timeout := Timeout{to, nil, ch, msg, true, time.Now().Add(to)}
+func NewTimeout(to time.Duration, ch chan Event, msg string) (*Timeout) {
+    timeout := new(Timeout)
+    *timeout = Timeout{to, nil, ch, msg, true, time.Now().Add(to)}
 
     timeout.impl = time.AfterFunc(timeout.to, func() {
         timeout.alive_ = false
@@ -65,27 +68,27 @@ func NewTimeout(to time.Duration, ch chan Event, msg string) (Timeout) {
     return timeout
 }
 
-func (timeout Timeout) stop() {
+func (timeout *Timeout) stop() {
     timeout.impl.Stop()
     timeout.alive_ = false
 }
 
-func (timeout Timeout) restart() {
+func (timeout *Timeout) restart() {
     timeout.eta = time.Now().Add(timeout.to)
     timeout.impl.Reset(timeout.to)
     timeout.alive_ = true 
 }
 
-func (timeout Timeout) reset(to time.Duration) {
+func (timeout *Timeout) reset(to time.Duration) {
     timeout.to = to
     timeout.restart()
 }
 
-func (timeout Timeout) alive() (bool) {
+func (timeout *Timeout) alive() (bool) {
     return timeout.alive_
 }
 
-func (timeout Timeout) remaining() (time.Duration) {
+func (timeout *Timeout) remaining() (time.Duration) {
     if !timeout.alive_ {
         return 0
     }
@@ -94,16 +97,70 @@ func (timeout Timeout) remaining() (time.Duration) {
 
 // Packet codec
 
+func gen_hmac(data []byte, key []byte) (string) {
+    mac := hmac.New(sha256.New, key)
+    mac.Write(data)
+    return hex.EncodeToString(mac.Sum(nil))[0:16]
+}
+
 func gen_packet(link int, key []byte, challenge string, response string) ([]byte) {
     now := time.Now().UTC()
     our_time := strftime.Format("%Y-%m-%dT%H:%M:%S", now)
     sdata := fmt.Sprintf("%d %s %s %s ", link, our_time, challenge, response)
     data := []byte(sdata)
-    mac := hmac.New(sha256.New, key)
-    mac.Write(data)
-    hexdigest := []byte(hex.EncodeToString(mac.Sum(nil)))[0:16]
+    hexdigest := []byte(gen_hmac(data, key))
     data = append(data, hexdigest...)
     return data
+}
+
+func parse_packet(link int, key []byte, bdata []byte) (string, string) {
+    sdata := string(bdata)
+    data := strings.Fields(sdata)
+    if len(data) != 5 {
+        log.Print("Invalid packet format ", data)
+        return "", "" 
+    }
+
+    their_link := data[0]
+    their_time := data[1]
+    challenge := data[2]
+    response := data[3]
+    hmac := data[4]
+
+    if their_link != "1" && their_link != "2" {
+        log.Print("Bad link number ", their_link)
+        return "", "" 
+    }
+
+    ilink, _ := strconv.Atoi(their_link)
+    if ilink != link {
+        log.Print("Unexpected link number ", their_link, " ours is ", link)
+        return "", "" 
+    }
+
+    tmp := fmt.Sprintf("%s %s %s %s ", their_link, their_time, challenge, response)
+    exp_hmac := gen_hmac([]byte(tmp), key)
+    if exp_hmac != hmac {
+        log.Print("Inconsistent HMAC")
+        return "", "" 
+    }
+    
+    log.Print("Received ", tmp)
+
+    their_time_parsed, err := strftime.Parse("%Y-%m-%dT%H:%M:%S", their_time)
+    if err != nil {
+        log.Print("Date parsing error: ", err)
+        return "", "" 
+    }
+
+    now := time.Now().UTC()
+    diff := their_time_parsed.Sub(now)
+    if diff.Seconds() > 120 {
+        log.Print("Skewed date/time, here ", now, " theirs ", their_time)
+        return "", "" 
+    }
+
+    return challenge, response
 }
 
 // VMonitor global state
@@ -116,12 +173,31 @@ var their_challenge = []string {"None", "None"}
 func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Event, msg string) {
     for {
         data := make([]byte, 1500, 1500)
-        n, _, err := conn.ReadFromUDP(data[0:])
+        length, _, err := conn.ReadFromUDP(data[0:])
         if err != nil {
             log.Fatal(err)
         }
-        // FIXME parse packet, feed to, cto
-        log.Print(n)
+        log.Print("recv packet")
+        challenge, response := parse_packet(link, []byte(secret), data[0:length])
+        if challenge == "" || response == "" {
+            continue
+        }
+
+        // FIXME detect peer addr
+
+        to.restart()
+        their_challenge[link-1] = challenge
+
+        if our_challenge[link-1] == "None" {
+            log.Print("Not evaluating response")
+        } else if response == our_challenge[link-1] {
+            log.Print("Good response")
+            cto.restart()
+            our_challenge[link-1] = "None"
+        } else {
+            log.Print("Wrong response")
+        }
+
         ch <- Event{msg}
     }
 }
@@ -216,26 +292,47 @@ func main() {
     hys := NewTimeout(initial_hysteresis * time.Second, ch, "hysteresis")
 
     // goroutines that receive beacon packets from remote side
-    go readudp(socket1, 1, &to1, &cto1, ch, "recv1")
-    go readudp(socket2, 2, &to2, &cto2, ch, "recv2")
+    go readudp(socket1, 1, to1, cto1, ch, "recv1")
+    go readudp(socket2, 2, to2, cto2, ch, "recv2")
 
-    var state = "undefined"
+    var current_state = "undefined"
 
     for {
         event := <-ch;
-	    log.Print(event.name)
-        log.Print("Status ", state,
+        log.Print("State ", current_state,
                     " to1 ", int(to1.remaining().Seconds()),
                     "/", int(cto1.remaining().Seconds()),
                     " to2 ", int(to2.remaining().Seconds()),
                     "/", int(cto2.remaining().Seconds()),
-                    " hys ", int(hys.remaining().Seconds()))
+                    " hys ", int(hys.remaining().Seconds()),
+                    " event ", event.name)
 
-        // FIXME print general status
-        if event.name != "hysteresis" {
+        if hys.alive() {
             continue
         }
+
+        // FIXME handle hard_heartbeat
+
+        link1_up := to1.alive() && cto1.alive()
+        link2_up := to2.alive() && cto2.alive()
+
+        i := 0
+        if link1_up {
+            i += 1
+        }
+        if link2_up {
+            i += 2
+        }
+
+        new_state := []string{"NOLINK", "LINK1", "LINK2", "LINK1_LINK2"}[i]
+
+        if new_state == current_state {
+            continue
+        }
+
+        current_state = new_state
+        log.Print("New state: ", current_state)
+        // FIXME run script
         hys.reset(hysteresis * time.Second)
-        // FIXME event handler
     }
 }
