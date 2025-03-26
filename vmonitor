@@ -284,7 +284,7 @@ def parse_config():
         print("If either of mailfrom or mailto is None, both must be None")
         usage()
     
-    for name in ('pingavg', 'timeout', 'ctimeout', 'hysteresis', 'heartbeat', 'initial_hysteresis', 'hard_heartbeat'):
+    for name in ('pingavg', 'timeout', 'ctimeout', 'heartbeat'):
         prechki(name, cfg)
         try:
             config[name] = int(cfg[name])
@@ -293,6 +293,17 @@ def parse_config():
             usage()
         if config[name] <= 0:
             print("Config %s should be a positive integer value" % name)
+            usage()
+
+    for name in ('hysteresis', 'initial_hysteresis', 'hard_heartbeat'):
+        prechki(name, cfg)
+        try:
+            config[name] = int(cfg[name])
+        except ValueError:
+            print("Config %s should be an integer value" % name)
+            usage()
+        if config[name] < 0:
+            print("Config %s should be a non-negative integer value" % name)
             usage()
 
     for name in ('pingvar', 'loglevel', 'maillevel'):
