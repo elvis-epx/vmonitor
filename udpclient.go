@@ -207,6 +207,8 @@ func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Eve
             log.Print(link, "> Good response")
             cto.restart()
             our_challenge[link-1] = "None"
+        } else if response == "None" {
+            log.Print(link, "> Null response (exchange incomplete)")
         } else {
             log.Print(link, "> Wrong response")
         }
@@ -218,22 +220,29 @@ func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Eve
 // UDP packet sender
 
 func sendudp(link int, conn *net.UDPConn) {
-    for {
-        if our_challenge[link-1] == "None" {
-            our_challenge[link-1] = fmt.Sprintf("%x", rand.Int32())
-        }
-        packet := gen_packet(link, []byte(secret), our_challenge[link-1], their_challenge[link-1]) 
 
+    var nil_log = false
+
+    for {
         addr := peer_addrs[link-1]
+
         if addr != nil {
+            nil_log = false
+            if our_challenge[link-1] == "None" {
+                our_challenge[link-1] = fmt.Sprintf("%x", rand.Int32())
+            }
+            packet := gen_packet(link, []byte(secret), our_challenge[link-1], their_challenge[link-1]) 
+
             _, err := conn.WriteToUDP(packet, addr)
             if err != nil {
                 log.Print(err) // non-fatal
             } else {
                 log.Print("Link ", link, " sent ", string(packet))
             }
-        } else {
+
+        } else if !nil_log {
             log.Print("Link  ", link, ": peer address still unknown")
+            nil_log = true
         }
 
         sleep := pingavg + 2 * pingvar * (rand.Float32() - 0.5)
