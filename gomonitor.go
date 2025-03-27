@@ -11,37 +11,11 @@ import (
     "crypto/hmac"
     "crypto/sha256"
     "encoding/hex"
-    "github.com/ncruces/go-strftime"
     "math/rand/v2"
     "os/exec"
+    "gopkg.in/ini.v1"
+    "github.com/ncruces/go-strftime"
 )
-
-const link1_server = "127.0.0.1:55000"
-const link2_server = "127.0.0.1:55001"
-var server = []string {link1_server, link2_server}
-const link1_client = "127.0.0.1:55002"
-const link2_client = "127.0.0.1:55003"
-var client = []string {link1_client, link2_client}
-
-const pingavg = 20
-const pingvar = 10
-const timeout = 60
-const ctimeout = 90
-const hysteresis = 90
-const initial_hysteresis = 60
-
-const heartbeat = 3600
-const hard_heartbeat = 600
-
-const link1_link2_script = "./link1_link2_script"
-const link2_script = "./link2_script"
-const link1_script = "./link1_script"
-const nolink_script = "./nolink_script"
-var state_scripts = []string {nolink_script, link1_script, link2_script, link1_link2_script}
-
-const secret = "abracadabra"
-
-// Implementation
 
 // Base of "event loop"
 
@@ -178,7 +152,7 @@ func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
     return addr1.Port == addr2.Port && addr1.IP.Equal(addr2.IP)
 }
 
-func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Event, msg string) {
+func readudp(conn *net.UDPConn, link int, secret []byte, to *Timeout, cto *Timeout, ch chan Event, msg string) {
     for {
         data := make([]byte, 1500, 1500)
         length, addr, err := conn.ReadFromUDP(data[0:])
@@ -186,7 +160,7 @@ func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Eve
             log.Fatal(err)
         }
         log.Print(msg)
-        challenge, response := parse_packet(link, []byte(secret), data[0:length])
+        challenge, response := parse_packet(link, secret, data[0:length])
         if challenge == "" || response == "" {
             continue
         }
@@ -219,7 +193,7 @@ func readudp(conn *net.UDPConn, link int, to *Timeout, cto *Timeout, ch chan Eve
 
 // UDP packet sender
 
-func sendudp(link int, conn *net.UDPConn) {
+func sendudp(link int, secret []byte, pingavg int, pingvar int, conn *net.UDPConn) {
 
     var nil_log = false
 
@@ -231,7 +205,7 @@ func sendudp(link int, conn *net.UDPConn) {
             if our_challenge[link-1] == "None" {
                 our_challenge[link-1] = fmt.Sprintf("%x", rand.Int32())
             }
-            packet := gen_packet(link, []byte(secret), our_challenge[link-1], their_challenge[link-1]) 
+            packet := gen_packet(link, secret, our_challenge[link-1], their_challenge[link-1]) 
 
             _, err := conn.WriteToUDP(packet, addr)
             if err != nil {
@@ -245,19 +219,125 @@ func sendudp(link int, conn *net.UDPConn) {
             nil_log = true
         }
 
-        sleep := pingavg + 2 * pingvar * (rand.Float32() - 0.5)
+        sleep := float32(pingavg) + 2.0 * float32(pingvar) * (rand.Float32() - 0.5)
         time.Sleep(time.Duration(sleep * 1000) * time.Millisecond) 
     }
 }
 
-func main() {
-    if len(os.Args) < 2 || (os.Args[1] != "client" && os.Args[1] != "server") {
-        log.Fatal("Usage: vmonitor <client|server>")
+// Misc
+
+func secs(t int) (time.Duration) {
+    return time.Duration(t) * time.Second
+}
+
+// Config parsing
+
+var list_cfgss = []string{"link1_server", "link2_server", "link1_client", "link2_client", "secret",
+                            "link1_script", "link2_script", "link1_link2_script", "nolink_script"}
+var list_cfgip = []string{"pingavg", "pingvar", "timeout", "ctimeout", "heartbeat"}
+var list_cfgi = []string{"hysteresis", "initial_hysteresis", "hard_heartbeat"}
+
+func parse(cfgfile string) (string, map[string]string, map[string]int) {
+
+    cfgs := make(map[string]string)
+    cfgi := make(map[string]int)
+
+    inidata, err := ini.Load(os.Args[1])
+    if err != nil {
+        return "Failed to open or parse config file", cfgs, cfgi
     }
+
+    config, err := inidata.GetSection("vmonitor")
+    if err != nil {
+        return "Config file has no [vmonitor] section", cfgs, cfgi
+    }
+
+    for _, k:= range list_cfgss {
+        if !config.Haskey(k) {
+            return "Config file is missing item: " + k, cfgs, cfgi
+        }
+        v := config.Key(k).String()
+        if v == "" {
+            return "Config file has empty item: " + k, cfgs, cfgi
+        }
+        cfgs[k] = v
+    }
+
+    for _, k:= range list_cfgi {
+        if !config.Haskey(k) {
+            return "Config file is missing item: " + k, cfgs, cfgi
+        }
+        v, err := config.Key(k).Int()
+        if err != nil || v < 0 {
+            return "Config file has invalid int: " + k, cfgs, cfgi
+        }
+        cfgi[k] = v
+    }
+
+    for _, k:= range list_cfgip {
+        if !config.Haskey(k) {
+            return "Config file is missing item: " + k, cfgs, cfgi
+        }
+        v, err := config.Key(k).Int()
+        if err != nil || v <= 0 {
+            return "Config file has invalid int: " + k, cfgs, cfgi
+        }
+        cfgi[k] = v
+    }
+
+    if len(cfgs["secret"]) < 10 {
+        return "Secret key must have at least 10 chars", cfgs, cfgi
+    }
+
+    if cfgi["pingavg"] <= cfgi["pingvar"] {
+        return "pingavg must be larger than pingvar", cfgs, cfgi
+    }
+
+    if (cfgi["pingavg"] + cfgi["pingvar"] + 1) >= cfgi["timeout"] {
+        return "pingavg + pingvar + 1 should be less than timeout", cfgs, cfgi
+    }
+
+    if cfgi["ctimeout"] <= cfgi["timeout"] {
+        return "ctimeout should be bigger than timeout", cfgs, cfgi
+    }
+    
+    if cfgi["hysteresis"] <= cfgi["timeout"] {
+        return "hysteresis should be bigger than timeout", cfgs, cfgi
+    }
+
+
+    if cfgs["link1_server"] == cfgs["link2_server"] ||
+            cfgs["link1_client"] == cfgs["link2_client"] ||
+            cfgs["link1_client"] == cfgs["link1_server"] ||
+            cfgs["link1_client"] == cfgs["link2_server"] ||
+            cfgs["link2_client"] == cfgs["link1_server"] ||
+            cfgs["link2_client"] == cfgs["link2_server"] {
+        return "All four link addresses must be different", cfgs, cfgi
+    }
+    
+    return "", cfgs, cfgi
+}
+
+// Main function
+
+func main() {
+    if len(os.Args) < 3 || (os.Args[2] != "client" && os.Args[2] != "server") {
+        log.Fatal("Usage: vmonitor <config file> <client|server>")
+    }
+
+    parseerr, cfgs, cfgi := parse(os.Args[1])
+    if parseerr != "" {
+        log.Fatal(parseerr)
+    }
+    persona = os.Args[2]
+
+    var state_scripts = []string {cfgs["nolink_script"], cfgs["link1_script"], cfgs["link2_script"], cfgs["link1_link2_script"]}
+    var states = []string{"NOLINK", "LINK1", "LINK2", "LINK1_LINK2"}
+    var server = []string {cfgs["link1_server"], cfgs["link2_server"]}
+    var client = []string {cfgs["link1_client"], cfgs["link2_client"]}
 
     var local []string
     var remote []string
-    persona = os.Args[1]
 
     if persona == "client" {
         local = client
@@ -266,7 +346,7 @@ func main() {
         local = server
         remote = client
     }
-        
+
     localaddr1, err := net.ResolveUDPAddr("udp", local[0])
 
     if err != nil {
@@ -311,30 +391,30 @@ func main() {
     ch := make(chan Event)
 
     // standalone goroutines that send beacon packets
-    go sendudp(1, socket1)
-    go sendudp(2, socket2)
+    go sendudp(1, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket1)
+    go sendudp(2, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket2)
 
     // timeouts for packet reception
-    to1 := NewTimeout(timeout * time.Second, ch, "timeout1")
-    to2 := NewTimeout(timeout * time.Second, ch, "timeout2")
+    to1 := NewTimeout(secs(cfgi["timeout"]), ch, "timeout1")
+    to2 := NewTimeout(secs(cfgi["timeout"]), ch, "timeout2")
 
     // timeouts for challenge response
-    cto1 := NewTimeout(ctimeout * time.Second, ch, "ctimeout1")
-    cto2 := NewTimeout(ctimeout * time.Second, ch, "ctimeout2")
+    cto1 := NewTimeout(secs(cfgi["ctimeout"]), ch, "ctimeout1")
+    cto2 := NewTimeout(secs(cfgi["ctimeout"]), ch, "ctimeout2")
 
     // heartbeats
-    heartbeat_timer := NewTimeout(heartbeat * time.Second, ch, "heartbeat")
+    heartbeat_timer := NewTimeout(secs(cfgi["heartbeat"]), ch, "heartbeat")
     var hard_heartbeat_timer *Timeout = nil
-    if hard_heartbeat > 0 {
-        hard_heartbeat_timer = NewTimeout(hard_heartbeat * time.Second, ch, "hard_heartbeat")
+    if cfgi["hard_heartbeat"] > 0 {
+        hard_heartbeat_timer = NewTimeout(secs(cfgi["hard_heartbeat"]), ch, "hard_heartbeat")
     }
 
     // state change hysteresis
-    hysteresis_timer := NewTimeout(initial_hysteresis * time.Second, ch, "hysteresis")
+    hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), ch, "hysteresis")
 
     // goroutines that receive beacon packets from remote side
-    go readudp(socket1, 1, to1, cto1, ch, "recv1")
-    go readudp(socket2, 2, to2, cto2, ch, "recv2")
+    go readudp(socket1, 1, []byte(cfgs["secret"]), to1, cto1, ch, "recv1")
+    go readudp(socket2, 2, []byte(cfgs["secret"]), to2, cto2, ch, "recv2")
 
     var current_state = "undefined"
 
@@ -368,7 +448,7 @@ func main() {
             i += 2
         }
 
-        new_state := []string{"NOLINK", "LINK1", "LINK2", "LINK1_LINK2"}[i]
+        new_state := states[i]
         new_state_script := state_scripts[i]
 
         if new_state != current_state {
@@ -381,7 +461,7 @@ func main() {
             continue
         }
 
-        if new_state_script != "" {
+        if new_state_script != "None" {
             log.Print("> Running state script")
             cmd := exec.Command("/bin/bash", "-c", new_state_script) 
             if err := cmd.Run(); err != nil {
@@ -391,6 +471,6 @@ func main() {
             log.Print("> No script configured for state")
         }
 
-        hysteresis_timer.reset(hysteresis * time.Second)
+        hysteresis_timer.reset(secs(cfgi["hysteresis"]))
     }
 }
