@@ -6,6 +6,7 @@ import (
     "os"
     "time"
     "log"
+    "math"
     "strings"
     "strconv"
     "crypto/hmac"
@@ -131,7 +132,7 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
 
     now := time.Now().UTC()
     diff := their_time_parsed.Sub(now)
-    if diff.Seconds() > 120 {
+    if math.Abs(diff.Seconds()) > 120 {
         log.Print(link, "> Skewed date/time, here ", now, " theirs ", their_time)
         return "", "" 
     }
@@ -153,12 +154,14 @@ func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
 }
 
 func readudp(conn *net.UDPConn, link int, secret []byte, to *Timeout, cto *Timeout, ch chan Event, msg string) {
+    data := make([]byte, 1500, 1500)
+
     for {
-        data := make([]byte, 1500, 1500)
         length, addr, err := conn.ReadFromUDP(data[0:])
         if err != nil {
             log.Fatal(err)
         }
+
         log.Print(msg)
         challenge, response := parse_packet(link, secret, data[0:length])
         if challenge == "" || response == "" {
@@ -456,7 +459,6 @@ func main() {
             log.Print("New state: ", current_state)
         } else if hard_heartbeat_timer != nil && !hard_heartbeat_timer.alive() {
             log.Print("Reapply state: ", current_state)
-            hard_heartbeat_timer.restart()
         } else {
             continue
         }
@@ -472,5 +474,8 @@ func main() {
         }
 
         hysteresis_timer.reset(secs(cfgi["hysteresis"]))
+        if hard_heartbeat_timer != nil {
+            hard_heartbeat_timer.restart()
+        }
     }
 }
