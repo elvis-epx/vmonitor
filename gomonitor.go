@@ -464,7 +464,7 @@ func main() {
         }
 
         if new_state_script != "None" {
-            log.Print("> Running state script")
+            log.Print("> Running state script ", new_state_script)
             cmd := exec.Command("/bin/bash", "-c", new_state_script) 
             if err := cmd.Run(); err != nil {
                 log.Print("> Script execution error: ", err)
