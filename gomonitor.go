@@ -457,6 +457,7 @@ func main() {
         if new_state != current_state {
             current_state = new_state
             log.Print("New state: ", current_state)
+            hysteresis_timer.reset(secs(cfgi["hysteresis"]))
         } else if hard_heartbeat_timer != nil && !hard_heartbeat_timer.alive() {
             log.Print("Reapply state: ", current_state)
         } else {
@@ -473,7 +474,6 @@ func main() {
             log.Print("> No script configured for state")
         }
 
-        hysteresis_timer.reset(secs(cfgi["hysteresis"]))
         if hard_heartbeat_timer != nil {
             hard_heartbeat_timer.restart()
         }
