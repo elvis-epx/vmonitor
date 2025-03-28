@@ -1,6 +1,6 @@
 # VMonitor
 
-VMonitor is a simple script put together to monitor network links. It is a
+VMonitor is a simple Python script put together to monitor network links. It is a
 refactored version of a script I wrote in 2004 for a client.
 
 It is currently suited for the following scenario: multihomed router with two redundant
@@ -171,3 +171,19 @@ or use a command similar to
 ```
 journalctl -u vmonitor.service -f
 ```
+
+# Go version
+
+`vmonitor` is written in Python and for now it is the reference implementation. We have written
+a version in Go, named `gomonitor`. The wire protocol is the same, so the two implementations are interoperable.
+You can build it by running `go build gomonitor.go`.
+
+Usage of `gomonitor` is almost exactly the same as `vmonitor`: same parameters, same config file.
+
+The Go version does not implement some features: logging level, logging to file, logging via e-mail,
+and daemon mode. The respective configurations are ignored. It is meant to run as a systemd service,
+which takes care of all these things.
+
+Writing this version was basically a personal exercise, but it may become the reference implementation,
+since Go binaries run standalone, which is a lot more practical than installing Python and its
+dependencies.
