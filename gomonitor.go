@@ -170,7 +170,6 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
 var our_challenge = []string {"None", "None"}
 var their_challenge = []string {"None", "None"}
 var peer_addrs = []*net.UDPAddr {nil, nil}
-var persona = "client"
 
 // UDP packet receiver
 
@@ -178,7 +177,7 @@ func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
     return addr1.Port == addr2.Port && addr1.IP.Equal(addr2.IP)
 }
 
-func readudp(conn *net.UDPConn, link int, secret []byte, to *Timeout, cto *Timeout, ch chan Event, msg string) {
+func readudp(persona string, conn *net.UDPConn, link int, secret []byte, to *Timeout, cto *Timeout, ch chan Event, msg string) {
     data := make([]byte, 1500, 1500)
 
     for {
@@ -357,7 +356,7 @@ func main() {
     if parseerr != "" {
         log.Fatal(parseerr)
     }
-    persona = os.Args[2]
+    persona := os.Args[2]
 
     var state_scripts = []string {cfgs["nolink_script"], cfgs["link1_script"], cfgs["link2_script"], cfgs["link1_link2_script"]}
     var states = []string{"NOLINK", "LINK1", "LINK2", "LINK1_LINK2"}
@@ -441,8 +440,8 @@ func main() {
     hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), ch, "hysteresis")
 
     // goroutines that receive beacon packets from remote side
-    go readudp(socket1, 1, []byte(cfgs["secret"]), to1, cto1, ch, "recv1")
-    go readudp(socket2, 2, []byte(cfgs["secret"]), to2, cto2, ch, "recv2")
+    go readudp(persona, socket1, 1, []byte(cfgs["secret"]), to1, cto1, ch, "recv1")
+    go readudp(persona, socket2, 2, []byte(cfgs["secret"]), to2, cto2, ch, "recv2")
 
     var current_state = "undefined"
 
