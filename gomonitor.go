@@ -166,10 +166,67 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
 }
 
 // VMonitor global state
+// TODO more idiomatic way of doing this, instead of Mutexes?
 
-var our_challenge = []string {"None", "None"}
-var their_challenge = []string {"None", "None"}
-var peer_addrs = []*net.UDPAddr {nil, nil}
+type VMonitor struct {
+    mu sync.Mutex
+    our_challenges [2]string
+    their_challenges [2]string
+    peer_addrs [2]*net.UDPAddr
+}
+
+func NewVMonitor() (*VMonitor) {
+    state := new(VMonitor)
+    state.our_challenges[0] = "None"
+    state.our_challenges[1] = "None"
+    state.their_challenges[0] = "None"
+    state.their_challenges[1] = "None"
+    state.peer_addrs[0] = nil
+    state.peer_addrs[1] = nil
+    return state
+}
+
+func (state *VMonitor) our_challenge(link int) (string) {
+    state.mu.Lock()
+    defer state.mu.Unlock()
+
+    return state.our_challenges[link-1]
+}
+
+func (state *VMonitor) their_challenge(link int) (string) {
+    state.mu.Lock()
+    defer state.mu.Unlock()
+
+    return state.their_challenges[link-1]
+}
+
+func (state *VMonitor) peer_addr(link int) (*net.UDPAddr) {
+    state.mu.Lock()
+    defer state.mu.Unlock()
+
+    return state.peer_addrs[link-1]
+}
+
+func (state *VMonitor) our_challenge_set(link int, challenge string) {
+    state.mu.Lock()
+    defer state.mu.Unlock()
+
+    state.our_challenges[link-1] = challenge
+}
+
+func (state *VMonitor) their_challenge_set(link int, challenge string) {
+    state.mu.Lock()
+    defer state.mu.Unlock()
+
+    state.their_challenges[link-1] = challenge
+}
+
+func (state *VMonitor) peer_addr_set(link int, addr *net.UDPAddr) {
+    state.mu.Lock()
+    defer state.mu.Unlock()
+
+    state.peer_addrs[link-1] = addr
+}
 
 // UDP packet receiver
 
@@ -177,7 +234,8 @@ func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
     return addr1.Port == addr2.Port && addr1.IP.Equal(addr2.IP)
 }
 
-func readudp(persona string, conn *net.UDPConn, link int, secret []byte, to *Timeout, cto *Timeout, ch chan Event, msg string) {
+func readudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secret []byte,
+                to *Timeout, cto *Timeout, ch chan Event, msg string) {
     data := make([]byte, 1500, 1500)
 
     for {
@@ -192,22 +250,26 @@ func readudp(persona string, conn *net.UDPConn, link int, secret []byte, to *Tim
             continue
         }
 
+        peer_addr := state.peer_addr(link)
+
         if persona == "server" {
-            if peer_addrs[link-1] == nil || !eq_addr(peer_addrs[link-1], addr) {
-                peer_addrs[link-1] = addr
+            if peer_addr == nil || !eq_addr(peer_addr, addr) {
+                state.peer_addr_set(link, addr)
                 log.Print(link, "> Detected new peer addr: ", addr)
             }
         }
 
         to.restart()
-        their_challenge[link-1] = challenge
+        state.their_challenge_set(link, challenge)
 
-        if our_challenge[link-1] == "None" {
+        our_challenge := state.our_challenge(link)
+
+        if our_challenge == "None" {
             log.Print(link, "> Not evaluating response")
-        } else if response == our_challenge[link-1] {
+        } else if response == our_challenge {
             log.Print(link, "> Good response")
             cto.restart()
-            our_challenge[link-1] = "None"
+            state.our_challenge_set(link, "None")
         } else if response == "None" {
             log.Print(link, "> Null response (exchange incomplete)")
         } else {
@@ -220,19 +282,19 @@ func readudp(persona string, conn *net.UDPConn, link int, secret []byte, to *Tim
 
 // UDP packet sender
 
-func sendudp(link int, secret []byte, pingavg int, pingvar int, conn *net.UDPConn) {
+func sendudp(state *VMonitor, link int, secret []byte, pingavg int, pingvar int, conn *net.UDPConn) {
 
     var nil_log = false
 
     for {
-        addr := peer_addrs[link-1]
+        addr := state.peer_addr(link)
 
         if addr != nil {
             nil_log = false
-            if our_challenge[link-1] == "None" {
-                our_challenge[link-1] = fmt.Sprintf("%x", rand.Int32())
+            if state.our_challenge(link) == "None" {
+                state.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
             }
-            packet := gen_packet(link, secret, our_challenge[link-1], their_challenge[link-1]) 
+            packet := gen_packet(link, secret, state.our_challenge(link), state.their_challenge(link)) 
 
             _, err := conn.WriteToUDP(packet, addr)
             if err != nil {
@@ -398,9 +460,11 @@ func main() {
         log.Fatal(err)
     }
 
+    state := NewVMonitor()
+
     if persona == "client" {
-        peer_addrs[0] = remoteaddr1
-        peer_addrs[1] = remoteaddr2
+        state.peer_addr_set(1, remoteaddr1)
+        state.peer_addr_set(2, remoteaddr2)
     }
 
     socket1, err := net.ListenUDP("udp", localaddr1)
@@ -418,8 +482,8 @@ func main() {
     ch := make(chan Event)
 
     // standalone goroutines that send beacon packets
-    go sendudp(1, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket1)
-    go sendudp(2, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket2)
+    go sendudp(state, 1, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket1)
+    go sendudp(state, 2, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket2)
 
     // timeouts for packet reception
     to1 := NewTimeout(secs(cfgi["timeout"]), ch, "timeout1")
@@ -440,8 +504,8 @@ func main() {
     hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), ch, "hysteresis")
 
     // goroutines that receive beacon packets from remote side
-    go readudp(persona, socket1, 1, []byte(cfgs["secret"]), to1, cto1, ch, "recv1")
-    go readudp(persona, socket2, 2, []byte(cfgs["secret"]), to2, cto2, ch, "recv2")
+    go readudp(state, persona, socket1, 1, []byte(cfgs["secret"]), to1, cto1, ch, "recv1")
+    go readudp(state, persona, socket2, 2, []byte(cfgs["secret"]), to2, cto2, ch, "recv2")
 
     var current_state = "undefined"
 
