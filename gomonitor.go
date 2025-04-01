@@ -9,6 +9,7 @@ import (
     "math"
     "strings"
     "strconv"
+    "sync"
     "crypto/hmac"
     "crypto/sha256"
     "encoding/hex"
@@ -31,11 +32,16 @@ type Timeout struct {
     msg string
     alive_ bool
     eta time.Time
+    mu sync.Mutex
 }
+
+// TODO try to replace the mutex with something more idiomatic
+// and still allows for alive() and remaining() methods
 
 func NewTimeout(to time.Duration, ch chan Event, msg string) (*Timeout) {
     timeout := new(Timeout)
-    *timeout = Timeout{to, nil, ch, msg, true, time.Now().Add(to)}
+    var mutex sync.Mutex
+    *timeout = Timeout{to, nil, ch, msg, true, time.Now().Add(to), mutex}
 
     timeout.impl = time.AfterFunc(timeout.to, func() {
         timeout.alive_ = false
@@ -46,26 +52,45 @@ func NewTimeout(to time.Duration, ch chan Event, msg string) (*Timeout) {
 }
 
 func (timeout *Timeout) stop() {
+    timeout.mu.Lock()
+    defer timeout.mu.Unlock()
+
     timeout.impl.Stop()
     timeout.alive_ = false
 }
 
 func (timeout *Timeout) restart() {
+    timeout.mu.Lock()
+    defer timeout.mu.Unlock()
+
+    timeout._restart()
+}
+
+func (timeout *Timeout) _restart() {
     timeout.eta = time.Now().Add(timeout.to)
     timeout.impl.Reset(timeout.to)
     timeout.alive_ = true 
 }
 
 func (timeout *Timeout) reset(to time.Duration) {
+    timeout.mu.Lock()
+    defer timeout.mu.Unlock()
+
     timeout.to = to
-    timeout.restart()
+    timeout._restart()
 }
 
 func (timeout *Timeout) alive() (bool) {
+    timeout.mu.Lock()
+    defer timeout.mu.Unlock()
+
     return timeout.alive_
 }
 
 func (timeout *Timeout) remaining() (time.Duration) {
+    timeout.mu.Lock()
+    defer timeout.mu.Unlock()
+
     if !timeout.alive_ {
         return 0
     }
