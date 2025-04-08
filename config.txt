@@ -17,12 +17,12 @@ link2_client = 127.0.0.1:55003
 ; heartbeat: log mark just to show that app is still running
 ; all times in seconds
 
-pingavg = 20
-pingvar = 10
-timeout = 90
-ctimeout = 135
-hysteresis = 300
-heartbeat = 3600
+pingavg = 10
+pingvar = 5
+timeout = 30
+ctimeout = 45
+hysteresis = 120
+heartbeat = 60
 
 ; initial_hysteresis: time between start and call first script
 ; May be useful to wait until the system network is 100% configured
@@ -48,7 +48,7 @@ nolink_script = None
 ; observability e.g. reporting the network status using MQTT. Periodic 
 ; MQTT messages serve to indicate the system is healthy.
 
-hard_heartbeat = 0
+hard_heartbeat = 300
 
 ; Secret key used to sign ping packets with HMAC
 

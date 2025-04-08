@@ -9,7 +9,6 @@ import (
     "math"
     "strings"
     "strconv"
-    "sync"
     "crypto/hmac"
     "crypto/sha256"
     "encoding/hex"
@@ -218,67 +217,93 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
     return challenge, response
 }
 
-// VMonitor global state
-// TODO more idiomatic way of doing this, instead of Mutexes?
+// VMonitor shared global state
 
 type VMonitor struct {
-    mu sync.Mutex
-    our_challenges [2]string
-    their_challenges [2]string
-    peer_addrs [2]*net.UDPAddr
+    our_challenge_ [2]string
+    their_challenge_ [2]string
+    peer_addr_ [2]*net.UDPAddr
+
+    our_challenge_control chan VMonitorChallenge
+    their_challenge_control chan VMonitorChallenge
+    peer_addr_control chan VMonitorPeer
+    data_ch chan VMonitorData
+}
+
+type VMonitorData struct {
+    our_challenge [2]string
+    their_challenge [2]string
+    peer_addr [2]*net.UDPAddr
+}
+
+type VMonitorChallenge struct {
+    link int
+    challenge string
+}
+
+type VMonitorPeer struct {
+    link int
+    addr *net.UDPAddr
 }
 
 func NewVMonitor() (*VMonitor) {
-    state := new(VMonitor)
-    state.our_challenges[0] = "None"
-    state.our_challenges[1] = "None"
-    state.their_challenges[0] = "None"
-    state.their_challenges[1] = "None"
-    state.peer_addrs[0] = nil
-    state.peer_addrs[1] = nil
-    return state
+    global := new(VMonitor)
+    global.our_challenge_[0] = "None"
+    global.our_challenge_[1] = "None"
+    global.their_challenge_[0] = "None"
+    global.their_challenge_[1] = "None"
+    global.peer_addr_[0] = nil
+    global.peer_addr_[1] = nil
+
+    global.our_challenge_control = make(chan VMonitorChallenge)
+    global.their_challenge_control = make(chan VMonitorChallenge)
+    global.peer_addr_control = make(chan VMonitorPeer)
+    global.data_ch = make(chan VMonitorData)
+
+    go global.handler()
+    return global
 }
 
-func (state *VMonitor) our_challenge(link int) (string) {
-    state.mu.Lock()
-    defer state.mu.Unlock()
-
-    return state.our_challenges[link-1]
+// Only this goroutine touches the private data
+func (global *VMonitor) handler() {
+    for {
+        select {
+        case global.data_ch <- VMonitorData{global.our_challenge_, global.their_challenge_, global.peer_addr_}:
+            continue 
+        case oc := <- global.our_challenge_control:
+            global.our_challenge_[oc.link] = oc.challenge       
+        case tc := <- global.their_challenge_control:
+            global.their_challenge_[tc.link] = tc.challenge       
+        case pa := <- global.peer_addr_control:
+            global.peer_addr_[pa.link] = pa.addr
+        }
+    }
 }
 
-func (state *VMonitor) their_challenge(link int) (string) {
-    state.mu.Lock()
-    defer state.mu.Unlock()
+// public methods to manipulate shared global state
 
-    return state.their_challenges[link-1]
+func (global *VMonitor) our_challenge(link int) (string) {
+    return (<-global.data_ch).our_challenge[link-1]
 }
 
-func (state *VMonitor) peer_addr(link int) (*net.UDPAddr) {
-    state.mu.Lock()
-    defer state.mu.Unlock()
-
-    return state.peer_addrs[link-1]
+func (global *VMonitor) their_challenge(link int) (string) {
+    return (<-global.data_ch).their_challenge[link-1]
 }
 
-func (state *VMonitor) our_challenge_set(link int, challenge string) {
-    state.mu.Lock()
-    defer state.mu.Unlock()
-
-    state.our_challenges[link-1] = challenge
+func (global *VMonitor) peer_addr(link int) (*net.UDPAddr) {
+    return (<-global.data_ch).peer_addr[link-1]
 }
 
-func (state *VMonitor) their_challenge_set(link int, challenge string) {
-    state.mu.Lock()
-    defer state.mu.Unlock()
-
-    state.their_challenges[link-1] = challenge
+func (global *VMonitor) our_challenge_set(link int, challenge string) {
+    global.our_challenge_control <- VMonitorChallenge{link-1, challenge}
 }
 
-func (state *VMonitor) peer_addr_set(link int, addr *net.UDPAddr) {
-    state.mu.Lock()
-    defer state.mu.Unlock()
+func (global *VMonitor) their_challenge_set(link int, challenge string) {
+    global.their_challenge_control <- VMonitorChallenge{link-1, challenge}
+}
 
-    state.peer_addrs[link-1] = addr
+func (global *VMonitor) peer_addr_set(link int, addr *net.UDPAddr) {
+    global.peer_addr_control <- VMonitorPeer{link-1, addr}
 }
 
 // UDP packet receiver
@@ -287,7 +312,7 @@ func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
     return addr1.Port == addr2.Port && addr1.IP.Equal(addr2.IP)
 }
 
-func recvudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secret []byte,
+func recvudp(global *VMonitor, persona string, conn *net.UDPConn, link int, secret []byte,
              feedback chan Event, msg_goodpacket string, msg_goodresponse string) {
     data := make([]byte, 1500, 1500)
 
@@ -303,19 +328,19 @@ func recvudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secre
             continue
         }
 
-        peer_addr := state.peer_addr(link)
+        peer_addr := global.peer_addr(link)
 
         if persona == "server" {
             if peer_addr == nil || !eq_addr(peer_addr, addr) {
-                state.peer_addr_set(link, addr)
+                global.peer_addr_set(link, addr)
                 log.Print(link, "> Detected new peer addr: ", addr)
             }
         }
 
         // packet received and valid, up to this point. Now, check challenges
 
-        state.their_challenge_set(link, challenge)
-        our_challenge := state.our_challenge(link)
+        global.their_challenge_set(link, challenge)
+        our_challenge := global.our_challenge(link)
 
         msg := msg_goodpacket
 
@@ -324,7 +349,7 @@ func recvudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secre
         } else if response == our_challenge {
             log.Print(link, "> Good response")
             msg = msg_goodresponse
-            state.our_challenge_set(link, "None")
+            global.our_challenge_set(link, "None")
         } else if response == "None" {
             log.Print(link, "> Null response (exchange incomplete)")
         } else {
@@ -337,11 +362,11 @@ func recvudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secre
 
 // UDP packet sender
 
-func sendudp(state *VMonitor, link int, secret []byte, conn *net.UDPConn, addr *net.UDPAddr) {
-    if state.our_challenge(link) == "None" {
-        state.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
+func sendudp(global *VMonitor, link int, secret []byte, conn *net.UDPConn, addr *net.UDPAddr) {
+    if global.our_challenge(link) == "None" {
+        global.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
     }
-    packet := gen_packet(link, secret, state.our_challenge(link), state.their_challenge(link)) 
+    packet := gen_packet(link, secret, global.our_challenge(link), global.their_challenge(link)) 
 
     _, err := conn.WriteToUDP(packet, addr)
     if err != nil {
@@ -351,13 +376,13 @@ func sendudp(state *VMonitor, link int, secret []byte, conn *net.UDPConn, addr *
     }
 }
 
-func send_ping(state *VMonitor, link int, conn *net.UDPConn, secret []byte) {
-    addr := state.peer_addr(link)
+func send_ping(global *VMonitor, link int, conn *net.UDPConn, secret []byte) {
+    addr := global.peer_addr(link)
     if addr == nil {
         log.Print("Link ", link, ": peer address still unknown")
         return
     }
-    sendudp(state, link, secret, conn, addr)
+    sendudp(global, link, secret, conn, addr)
 }
 
 // Misc
@@ -507,11 +532,11 @@ func main() {
         log.Fatal(err)
     }
 
-    state := NewVMonitor()
+    global := NewVMonitor()
 
     if persona == "client" {
-        state.peer_addr_set(1, remoteaddr1)
-        state.peer_addr_set(2, remoteaddr2)
+        global.peer_addr_set(1, remoteaddr1)
+        global.peer_addr_set(2, remoteaddr2)
     }
 
     socket1, err := net.ListenUDP("udp", localaddr1)
@@ -535,8 +560,8 @@ func main() {
 
     send_to := NewTimeout(secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (to *Timeout) {
         // timeout handler runs in goroutine context
-        send_ping(state, 1, socket1, secret)
-        send_ping(state, 2, socket2, secret)
+        send_ping(global, 1, socket1, secret)
+        send_ping(global, 2, socket2, secret)
         // try to log after packets have been sent and timer has been restart
         go func() { ch <- Event{"send"} }()
         to.restart()
@@ -561,8 +586,8 @@ func main() {
     hysteresis_timer := NewTimeout2(secs(cfgi["initial_hysteresis"]), 0, ch, "hysteresis")
 
     // goroutines that receive beacon packets from remote side
-    go recvudp(state, persona, socket1, 1, secret, ch, "recv1", "Recv1")
-    go recvudp(state, persona, socket2, 2, secret, ch, "recv2", "Recv2")
+    go recvudp(global, persona, socket1, 1, secret, ch, "recv1", "Recv1")
+    go recvudp(global, persona, socket2, 2, secret, ch, "recv2", "Recv2")
 
     var current_state = "undefined"
 
