@@ -26,31 +26,56 @@ type Event struct {
 }
 
 type Timeout struct {
-    to time.Duration
+    recurring bool
+    avgto time.Duration
+    fudge time.Duration
     impl *time.Timer
-    ch chan Event
-    msg string
     alive_ bool
     eta time.Time
     mu sync.Mutex
+    callback TimeoutCallback
 }
+
+type TimeoutCallback func (*Timeout)
 
 // TODO try to replace the mutex with something more idiomatic
 // and still allows for alive() and remaining() methods
 
-func NewTimeout(to time.Duration, ch chan Event, msg string) (*Timeout) {
+func NewTimeout(recurring bool, avgto time.Duration, fudge time.Duration, callback TimeoutCallback) (*Timeout) {
     timeout := new(Timeout)
     var mutex sync.Mutex
-    *timeout = Timeout{to, nil, ch, msg, true, time.Now().Add(to), mutex}
-
-    timeout.impl = time.AfterFunc(timeout.to, func() {
-        timeout.mu.Lock()
-        timeout.alive_ = false
-        timeout.mu.Unlock()
-        timeout.ch <- Event{timeout.msg}
-    })
-
+    *timeout = Timeout{recurring, avgto, fudge, nil, false, time.Now(), mutex, callback}
+    timeout._restart()
     return timeout
+}
+
+func (timeout *Timeout) _restart() {
+    if timeout.impl != nil {
+        timeout.impl.Stop()
+    }
+
+    relative_eta := timeout.avgto + 2 * timeout.fudge * time.Duration(rand.Float32() - 0.5)
+    timeout.eta = time.Now().Add(relative_eta)
+    timeout.alive_ = true 
+
+    timeout.impl = time.AfterFunc(relative_eta, func() {
+        timeout.mu.Lock()
+        if ! timeout.recurring {
+            timeout.alive_ = false
+        }
+        timeout.mu.Unlock()
+
+        timeout.callback(timeout)
+
+        // post-firing logic
+        timeout.mu.Lock()
+        if timeout.recurring && timeout.alive_ {
+            timeout._restart()
+        } else {
+            timeout.alive_ = false
+        }
+        timeout.mu.Unlock()
+    })
 }
 
 func (timeout *Timeout) stop() {
@@ -68,17 +93,12 @@ func (timeout *Timeout) restart() {
     timeout._restart()
 }
 
-func (timeout *Timeout) _restart() {
-    timeout.eta = time.Now().Add(timeout.to)
-    timeout.impl.Reset(timeout.to)
-    timeout.alive_ = true 
-}
-
-func (timeout *Timeout) reset(to time.Duration) {
+func (timeout *Timeout) reset(avgto time.Duration, fudge time.Duration) {
     timeout.mu.Lock()
     defer timeout.mu.Unlock()
 
-    timeout.to = to
+    timeout.avgto = avgto
+    timeout.fudge = fudge
     timeout._restart()
 }
 
@@ -488,22 +508,22 @@ func main() {
     go sendudp(state, 2, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket2)
 
     // timeouts for packet reception
-    to1 := NewTimeout(secs(cfgi["timeout"]), ch, "timeout1")
-    to2 := NewTimeout(secs(cfgi["timeout"]), ch, "timeout2")
+    to1 := NewTimeout(false, secs(cfgi["timeout"]), 0, func(_ *Timeout) { ch <- Event{"timeout1"} })
+    to2 := NewTimeout(false, secs(cfgi["timeout"]), 0, func(_ *Timeout) { ch <- Event{"timeout2"} })
 
     // timeouts for challenge response
-    cto1 := NewTimeout(secs(cfgi["ctimeout"]), ch, "ctimeout1")
-    cto2 := NewTimeout(secs(cfgi["ctimeout"]), ch, "ctimeout2")
+    cto1 := NewTimeout(false, secs(cfgi["ctimeout"]), 0, func(_ *Timeout) { ch <- Event{"ctimeout1"} })
+    cto2 := NewTimeout(false, secs(cfgi["ctimeout"]), 0, func(_ *Timeout) { ch <- Event{"ctimeout2"} })
 
     // heartbeats
-    heartbeat_timer := NewTimeout(secs(cfgi["heartbeat"]), ch, "heartbeat")
+    heartbeat_timer := NewTimeout(false, secs(cfgi["heartbeat"]), 0, func(_ *Timeout) { ch <- Event{"heartbeat"} })
     var hard_heartbeat_timer *Timeout = nil
     if cfgi["hard_heartbeat"] > 0 {
-        hard_heartbeat_timer = NewTimeout(secs(cfgi["hard_heartbeat"]), ch, "hard_heartbeat")
+        hard_heartbeat_timer = NewTimeout(false, secs(cfgi["hard_heartbeat"]), 0, func(_ *Timeout) { ch <- Event{"hard_heartbeat"} })
     }
 
     // state change hysteresis
-    hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), ch, "hysteresis")
+    hysteresis_timer := NewTimeout(false, secs(cfgi["initial_hysteresis"]), 0, func(_ *Timeout) { ch <- Event{"hysteresis"} })
 
     // goroutines that receive beacon packets from remote side
     go readudp(state, persona, socket1, 1, []byte(cfgs["secret"]), to1, cto1, ch, "recv1")
@@ -547,7 +567,7 @@ func main() {
         if new_state != current_state {
             current_state = new_state
             log.Print("New state: ", current_state)
-            hysteresis_timer.reset(secs(cfgi["hysteresis"]))
+            hysteresis_timer.reset(secs(cfgi["hysteresis"]), 0)
         } else if hard_heartbeat_timer != nil && !hard_heartbeat_timer.alive() {
             log.Print("Reapply state: ", current_state)
         } else {
