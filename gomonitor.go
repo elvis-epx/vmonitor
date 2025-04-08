@@ -256,8 +256,8 @@ func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
     return addr1.Port == addr2.Port && addr1.IP.Equal(addr2.IP)
 }
 
-func readudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secret []byte,
-                to *Timeout, cto *Timeout, ch chan Event, msg string) {
+func recvudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secret []byte,
+             feedback chan Event, msg_goodpacket string, msg_goodresponse string) {
     data := make([]byte, 1500, 1500)
 
     for {
@@ -281,16 +281,18 @@ func readudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secre
             }
         }
 
-        to.restart()
-        state.their_challenge_set(link, challenge)
+        // packet received and valid, up to this point. Now, check challenges
 
+        state.their_challenge_set(link, challenge)
         our_challenge := state.our_challenge(link)
+
+        msg := msg_goodpacket
 
         if our_challenge == "None" {
             log.Print(link, "> Not evaluating response")
         } else if response == our_challenge {
             log.Print(link, "> Good response")
-            cto.restart()
+            msg = msg_goodresponse
             state.our_challenge_set(link, "None")
         } else if response == "None" {
             log.Print(link, "> Null response (exchange incomplete)")
@@ -298,7 +300,7 @@ func readudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secre
             log.Print(link, "> Wrong response")
         }
 
-        ch <- Event{msg}
+        feedback <- Event{msg}
     }
 }
 
@@ -318,15 +320,10 @@ func sendudp(state *VMonitor, link int, secret []byte, conn *net.UDPConn, addr *
     }
 }
 
-var addr_known = []bool{true, true}
-
 func send_ping(state *VMonitor, link int, conn *net.UDPConn, secret []byte) {
     addr := state.peer_addr(link)
     if addr == nil {
-        if addr_known[link-1] {
-            addr_known[link-1] = false
-            log.Print("Link ", link, ": peer address still unknown")
-        }
+        log.Print("Link ", link, ": peer address still unknown")
         return
     }
     addr_known[link-1] = true
@@ -506,11 +503,11 @@ func main() {
     secret := []byte(cfgs["secret"])
 
     send_to := NewTimeout(true, secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (_ *Timeout) {
-        // this runs in goroutine context
-
-        ch <- Event{"send"}
+        // timeout handler runs in goroutine context
         send_ping(state, 1, socket1, secret)
         send_ping(state, 2, socket2, secret)
+        // try to log after packets have been sent and timer has been restart
+        go func() { ch <- Event{"send"} }()
     });
 
     // timeouts for packet reception
@@ -532,8 +529,8 @@ func main() {
     hysteresis_timer := NewTimeout(false, secs(cfgi["initial_hysteresis"]), 0, func(_ *Timeout) { ch <- Event{"hysteresis"} })
 
     // goroutines that receive beacon packets from remote side
-    go readudp(state, persona, socket1, 1, secret, to1, cto1, ch, "recv1")
-    go readudp(state, persona, socket2, 2, secret, to2, cto2, ch, "recv2")
+    go recvudp(state, persona, socket1, 1, secret, ch, "recv1", "Recv1")
+    go recvudp(state, persona, socket2, 2, secret, ch, "recv2", "Recv2")
 
     var current_state = "undefined"
 
@@ -541,6 +538,21 @@ func main() {
 
     for {
         event := <-ch;
+
+        // handle these first so the log reflects the latest link timeouts
+        switch event.name {
+            case "recv1":
+                to1.restart()
+            case "Recv1":
+                to1.restart()
+                cto1.restart()
+            case "recv2":
+                to2.restart()
+            case "Recv2":
+                to2.restart()
+                cto2.restart()
+        }
+
         log.Print("State ", current_state,
                     " to1 ", int(to1.remaining().Seconds()),
                     "/", int(cto1.remaining().Seconds()),
