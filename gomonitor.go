@@ -318,6 +318,21 @@ func sendudp(state *VMonitor, link int, secret []byte, conn *net.UDPConn, addr *
     }
 }
 
+var addr_known = []bool{true, true}
+
+func send_ping(state *VMonitor, link int, conn *net.UDPConn, secret []byte) {
+    addr := state.peer_addr(link)
+    if addr == nil {
+        if addr_known[link-1] {
+            addr_known[link-1] = false
+            log.Print("Link ", link, ": peer address still unknown")
+        }
+        return
+    }
+    addr_known[link-1] = true
+    sendudp(state, link, secret, conn, addr)
+}
+
 // Misc
 
 func secs(t int) (time.Duration) {
@@ -488,29 +503,14 @@ func main() {
 
     go func() { ch <- Event{"start"} }()
 
-    addr_known := []bool{true, true, true}
-
-    send_handler := func(link int, conn *net.UDPConn) {
-        addr := state.peer_addr(link)
-        if addr == nil {
-            if addr_known[link] {
-                addr_known[link] = false
-                log.Print("Link ", link, ": peer address still unknown")
-            }
-            return
-        }
-        addr_known[link] = true
-        sendudp(state, link, []byte(cfgs["secret"]), conn, addr)
-    }
+    secret := []byte(cfgs["secret"])
 
     send_to := NewTimeout(true, secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (_ *Timeout) {
         // this runs in goroutine context
 
         ch <- Event{"send"}
-        // try to allow main loop logging to happen before UDP send logging
-        time.Sleep(time.Duration(500) * time.Millisecond)
-        send_handler(1, socket1)
-        send_handler(2, socket2)
+        send_ping(state, 1, socket1, secret)
+        send_ping(state, 2, socket2, secret)
     });
 
     // timeouts for packet reception
@@ -532,8 +532,8 @@ func main() {
     hysteresis_timer := NewTimeout(false, secs(cfgi["initial_hysteresis"]), 0, func(_ *Timeout) { ch <- Event{"hysteresis"} })
 
     // goroutines that receive beacon packets from remote side
-    go readudp(state, persona, socket1, 1, []byte(cfgs["secret"]), to1, cto1, ch, "recv1")
-    go readudp(state, persona, socket2, 2, []byte(cfgs["secret"]), to2, cto2, ch, "recv2")
+    go readudp(state, persona, socket1, 1, secret, to1, cto1, ch, "recv1")
+    go readudp(state, persona, socket2, 2, secret, to2, cto2, ch, "recv2")
 
     var current_state = "undefined"
 
