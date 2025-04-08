@@ -266,7 +266,7 @@ func readudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secre
             log.Fatal(err)
         }
 
-        log.Print(msg)
+        log.Print(link, ">")
         challenge, response := parse_packet(link, secret, data[0:length])
         if challenge == "" || response == "" {
             continue
@@ -304,34 +304,17 @@ func readudp(state *VMonitor, persona string, conn *net.UDPConn, link int, secre
 
 // UDP packet sender
 
-func sendudp(state *VMonitor, link int, secret []byte, pingavg int, pingvar int, conn *net.UDPConn) {
+func sendudp(state *VMonitor, link int, secret []byte, conn *net.UDPConn, addr *net.UDPAddr) {
+    if state.our_challenge(link) == "None" {
+        state.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
+    }
+    packet := gen_packet(link, secret, state.our_challenge(link), state.their_challenge(link)) 
 
-    var nil_log = false
-
-    for {
-        addr := state.peer_addr(link)
-
-        if addr != nil {
-            nil_log = false
-            if state.our_challenge(link) == "None" {
-                state.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
-            }
-            packet := gen_packet(link, secret, state.our_challenge(link), state.their_challenge(link)) 
-
-            _, err := conn.WriteToUDP(packet, addr)
-            if err != nil {
-                log.Print(err) // non-fatal
-            } else {
-                log.Print("Link ", link, " sent ", string(packet))
-            }
-
-        } else if !nil_log {
-            log.Print("Link  ", link, ": peer address still unknown")
-            nil_log = true
-        }
-
-        sleep := float32(pingavg) + 2.0 * float32(pingvar) * (rand.Float32() - 0.5)
-        time.Sleep(time.Duration(sleep * 1000) * time.Millisecond) 
+    _, err := conn.WriteToUDP(packet, addr)
+    if err != nil {
+        log.Print(err) // non-fatal
+    } else {
+        log.Print("Link ", link, " sent ", string(packet))
     }
 }
 
@@ -503,9 +486,32 @@ func main() {
 
     ch := make(chan Event)
 
-    // standalone goroutines that send beacon packets
-    go sendudp(state, 1, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket1)
-    go sendudp(state, 2, []byte(cfgs["secret"]), cfgi["pingavg"], cfgi["pingvar"], socket2)
+    go func() { ch <- Event{"start"} }()
+
+    addr_known := []bool{true, true, true}
+
+    send_handler := func(link int, conn *net.UDPConn) {
+        addr := state.peer_addr(link)
+        if addr == nil {
+            if addr_known[link] {
+                addr_known[link] = false
+                log.Print("Link ", link, ": peer address still unknown")
+            }
+            return
+        }
+        addr_known[link] = true
+        sendudp(state, link, []byte(cfgs["secret"]), conn, addr)
+    }
+
+    send_to := NewTimeout(true, secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (_ *Timeout) {
+        // this runs in goroutine context
+
+        ch <- Event{"send"}
+        // try to allow main loop logging to happen before UDP send logging
+        time.Sleep(time.Duration(500) * time.Millisecond)
+        send_handler(1, socket1)
+        send_handler(2, socket2)
+    });
 
     // timeouts for packet reception
     to1 := NewTimeout(false, secs(cfgi["timeout"]), 0, func(_ *Timeout) { ch <- Event{"timeout1"} })
@@ -541,6 +547,7 @@ func main() {
                     " to2 ", int(to2.remaining().Seconds()),
                     "/", int(cto2.remaining().Seconds()),
                     " hys ", int(hysteresis_timer.remaining().Seconds()),
+                    " ping ", int(send_to.remaining().Seconds()),
                     " event ", event.name)
 
         heartbeat_timer.restart()
