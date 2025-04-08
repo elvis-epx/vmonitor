@@ -25,98 +25,129 @@ type Event struct {
     name string
 }
 
-type Timeout struct {
-    recurring bool
+type TimeoutControl struct {
+    name string
     avgto time.Duration
     fudge time.Duration
-    impl *time.Timer
-    alive_ bool
+}
+
+type TimeoutInfo struct {
     eta time.Time
-    mu sync.Mutex
-    callback TimeoutCallback
+    alive bool
+}
+
+type Timeout struct {
+    avgto_ time.Duration
+    fudge_ time.Duration
+    impl_ *time.Timer
+    alive_ bool
+    eta_ time.Time
+    callback_ TimeoutCallback
+
+    control chan TimeoutControl
+    info chan TimeoutInfo
 }
 
 type TimeoutCallback func (*Timeout)
 
-// TODO try to replace the mutex with something more idiomatic
-// and still allows for alive() and remaining() methods
-
-func NewTimeout(recurring bool, avgto time.Duration, fudge time.Duration, callback TimeoutCallback) (*Timeout) {
+func NewTimeout(avgto time.Duration, fudge time.Duration, callback TimeoutCallback) (*Timeout) {
     timeout := new(Timeout)
-    var mutex sync.Mutex
-    *timeout = Timeout{recurring, avgto, fudge, nil, false, time.Now(), mutex, callback}
+    *timeout = Timeout{avgto, fudge, nil, false, time.Now(), callback, make(chan TimeoutControl), make(chan TimeoutInfo)}
+    go timeout._handler()
     timeout._restart()
     return timeout
 }
 
+func NewTimeout2(avgto time.Duration, fudge time.Duration, cbch chan Event, msg string) (*Timeout) {
+    cb := func(_ *Timeout) {
+        cbch <- Event{msg}
+    }
+    return NewTimeout(avgto, fudge, cb)
+}
+
+func (timeout *Timeout) _handler() {
+    // Only this goroutine, _handle_command and _restart can touch Timeout private data
+    for {
+        select {
+        case cmd := <- timeout.control:
+           if !timeout._handle_command(cmd) {
+                break
+            }
+        case timeout.info <- TimeoutInfo{timeout.eta_, timeout.alive_}:
+            continue
+        }
+    }
+}
+
+func (timeout *Timeout) _handle_command(cmd TimeoutControl) (bool) {
+    switch cmd.name {
+    case "reset":
+        timeout.avgto_ = cmd.avgto
+        timeout.fudge_ = cmd.fudge
+        timeout._restart()
+    case "restart":
+        timeout._restart()
+    case "trigger":
+        timeout.alive_ = false
+        // callback must be in a goroutine because it may reconfigure the Timeout itself
+        // which would cause a deadlock due to unbuffered control channel, if called in
+        // the timer goroutine context
+        go timeout.callback_(timeout)
+    case "stop":
+        timeout.impl_.Stop()
+        timeout.alive_ = false
+    case "free":
+        timeout.impl_.Stop()
+        timeout.alive_ = false
+        return false
+    }
+    return true
+}
+
 func (timeout *Timeout) _restart() {
-    if timeout.impl != nil {
-        timeout.impl.Stop()
+    if timeout.impl_ != nil {
+        timeout.impl_.Stop()
     }
 
-    relative_eta := timeout.avgto + 2 * timeout.fudge * time.Duration(rand.Float32() - 0.5)
-    timeout.eta = time.Now().Add(relative_eta)
+    relative_eta := timeout.avgto_ + 2 * timeout.fudge_ * time.Duration(rand.Float32() - 0.5)
+    timeout.eta_ = time.Now().Add(relative_eta)
     timeout.alive_ = true 
 
-    timeout.impl = time.AfterFunc(relative_eta, func() {
-        timeout.mu.Lock()
-        if ! timeout.recurring {
-            timeout.alive_ = false
-        }
-        timeout.mu.Unlock()
-
-        timeout.callback(timeout)
-
-        // post-firing logic
-        timeout.mu.Lock()
-        if timeout.recurring && timeout.alive_ {
-            timeout._restart()
-        } else {
-            timeout.alive_ = false
-        }
-        timeout.mu.Unlock()
+    timeout.impl_ = time.AfterFunc(relative_eta, func() {
+        // goroutine context; make sure it goes through the control channel
+        timeout.control <- TimeoutControl{"trigger", 0, 0}
     })
 }
 
-func (timeout *Timeout) stop() {
-    timeout.mu.Lock()
-    defer timeout.mu.Unlock()
+// public methods
 
-    timeout.impl.Stop()
-    timeout.alive_ = false
+func (timeout *Timeout) stop() {
+    timeout.control <- TimeoutControl{"stop", 0, 0}
+}
+
+func (timeout *Timeout) free() {
+    timeout.control <- TimeoutControl{"free", 0, 0}
 }
 
 func (timeout *Timeout) restart() {
-    timeout.mu.Lock()
-    defer timeout.mu.Unlock()
-
-    timeout._restart()
+    timeout.control <- TimeoutControl{"restart", 0, 0}
 }
 
 func (timeout *Timeout) reset(avgto time.Duration, fudge time.Duration) {
-    timeout.mu.Lock()
-    defer timeout.mu.Unlock()
-
-    timeout.avgto = avgto
-    timeout.fudge = fudge
-    timeout._restart()
+    timeout.control <- TimeoutControl{"reset", avgto, fudge}
 }
 
 func (timeout *Timeout) alive() (bool) {
-    timeout.mu.Lock()
-    defer timeout.mu.Unlock()
-
-    return timeout.alive_
+    info := <- timeout.info
+    return info.alive
 }
 
 func (timeout *Timeout) remaining() (time.Duration) {
-    timeout.mu.Lock()
-    defer timeout.mu.Unlock()
-
-    if !timeout.alive_ {
+    info := <- timeout.info
+    if !info.alive {
         return 0
     }
-    return timeout.eta.Sub(time.Now()) 
+    return info.eta.Sub(time.Now()) 
 }
 
 // Packet codec
@@ -326,7 +357,6 @@ func send_ping(state *VMonitor, link int, conn *net.UDPConn, secret []byte) {
         log.Print("Link ", link, ": peer address still unknown")
         return
     }
-    addr_known[link-1] = true
     sendudp(state, link, secret, conn, addr)
 }
 
@@ -498,35 +528,37 @@ func main() {
 
     ch := make(chan Event)
 
+    // doing this since channel is unbuffered
     go func() { ch <- Event{"start"} }()
 
     secret := []byte(cfgs["secret"])
 
-    send_to := NewTimeout(true, secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (_ *Timeout) {
+    send_to := NewTimeout(secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (to *Timeout) {
         // timeout handler runs in goroutine context
         send_ping(state, 1, socket1, secret)
         send_ping(state, 2, socket2, secret)
         // try to log after packets have been sent and timer has been restart
         go func() { ch <- Event{"send"} }()
+        to.restart()
     });
 
     // timeouts for packet reception
-    to1 := NewTimeout(false, secs(cfgi["timeout"]), 0, func(_ *Timeout) { ch <- Event{"timeout1"} })
-    to2 := NewTimeout(false, secs(cfgi["timeout"]), 0, func(_ *Timeout) { ch <- Event{"timeout2"} })
+    to1 := NewTimeout2(secs(cfgi["timeout"]), 0, ch, "timeout1")
+    to2 := NewTimeout2(secs(cfgi["timeout"]), 0, ch, "timeout2")
 
     // timeouts for challenge response
-    cto1 := NewTimeout(false, secs(cfgi["ctimeout"]), 0, func(_ *Timeout) { ch <- Event{"ctimeout1"} })
-    cto2 := NewTimeout(false, secs(cfgi["ctimeout"]), 0, func(_ *Timeout) { ch <- Event{"ctimeout2"} })
+    cto1 := NewTimeout2(secs(cfgi["ctimeout"]), 0, ch, "ctimeout1")
+    cto2 := NewTimeout2(secs(cfgi["ctimeout"]), 0, ch, "ctimeout2")
 
     // heartbeats
-    heartbeat_timer := NewTimeout(false, secs(cfgi["heartbeat"]), 0, func(_ *Timeout) { ch <- Event{"heartbeat"} })
+    heartbeat_timer := NewTimeout2(secs(cfgi["heartbeat"]), 0, ch, "heartbeat")
     var hard_heartbeat_timer *Timeout = nil
     if cfgi["hard_heartbeat"] > 0 {
-        hard_heartbeat_timer = NewTimeout(false, secs(cfgi["hard_heartbeat"]), 0, func(_ *Timeout) { ch <- Event{"hard_heartbeat"} })
+        hard_heartbeat_timer = NewTimeout2(secs(cfgi["hard_heartbeat"]), 0, ch, "hard_heartbeat")
     }
 
     // state change hysteresis
-    hysteresis_timer := NewTimeout(false, secs(cfgi["initial_hysteresis"]), 0, func(_ *Timeout) { ch <- Event{"hysteresis"} })
+    hysteresis_timer := NewTimeout2(secs(cfgi["initial_hysteresis"]), 0, ch, "hysteresis")
 
     // goroutines that receive beacon packets from remote side
     go recvudp(state, persona, socket1, 1, secret, ch, "recv1", "Recv1")
