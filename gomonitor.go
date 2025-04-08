@@ -44,7 +44,9 @@ func NewTimeout(to time.Duration, ch chan Event, msg string) (*Timeout) {
     *timeout = Timeout{to, nil, ch, msg, true, time.Now().Add(to), mutex}
 
     timeout.impl = time.AfterFunc(timeout.to, func() {
+        timeout.mu.Lock()
         timeout.alive_ = false
+        timeout.mu.Unlock()
         timeout.ch <- Event{timeout.msg}
     })
 
