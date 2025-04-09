@@ -118,7 +118,7 @@ func (timeout *Timeout) _restart() {
     })
 }
 
-// public methods
+// public methods for Timeout
 
 func (timeout *Timeout) stop() {
     timeout.control <- TimeoutControl{"stop", 0, 0}
@@ -264,7 +264,8 @@ func NewVMonitor() (*VMonitor) {
     return global
 }
 
-// Only this goroutine touches the private data
+// Only this goroutine touches private data
+
 func (global *VMonitor) handler() {
     for {
         select {
@@ -553,16 +554,16 @@ func main() {
 
     ch := make(chan Event)
 
-    // doing this since channel is unbuffered
+    // using a goroutine this since ch is unbuffered
     go func() { ch <- Event{"start"} }()
 
     secret := []byte(cfgs["secret"])
 
     send_to := NewTimeout(secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (to *Timeout) {
-        // timeout handler runs in goroutine context
+        // a timeout handler runs in goroutine context
         send_ping(global, 1, socket1, secret)
         send_ping(global, 2, socket2, secret)
-        // try to log after packets have been sent and timer has been restart
+        // try to log after packets have been sent and timer has been restarted
         go func() { ch <- Event{"send"} }()
         to.restart()
     });
@@ -596,7 +597,7 @@ func main() {
     for {
         event := <-ch;
 
-        // handle these first so the log reflects the latest link timeouts
+        // handle these first so the log reflects the updated link timeouts
         switch event.name {
             case "recv1":
                 to1.restart()
