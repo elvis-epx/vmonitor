@@ -50,11 +50,10 @@ type Timeout struct {
 type TimeoutCallback func (*Timeout)
 
 func NewTimeout(avgto time.Duration, fudge time.Duration, callback TimeoutCallback) (*Timeout) {
-    timeout := new(Timeout)
-    *timeout = Timeout{avgto, fudge, nil, false, time.Now(), callback, make(chan TimeoutControl), make(chan TimeoutInfo)}
+    timeout := Timeout{avgto, fudge, nil, false, time.Now(), callback, make(chan TimeoutControl), make(chan TimeoutInfo)}
     go timeout._handler()
     timeout._restart()
-    return timeout
+    return &timeout
 }
 
 func NewTimeout2(avgto time.Duration, fudge time.Duration, cbch chan Event, msg string) (*Timeout) {
@@ -247,21 +246,18 @@ type VMonitorPeer struct {
 }
 
 func NewVMonitor() (*VMonitor) {
-    global := new(VMonitor)
-    global.our_challenge_[0] = "None"
-    global.our_challenge_[1] = "None"
-    global.their_challenge_[0] = "None"
-    global.their_challenge_[1] = "None"
-    global.peer_addr_[0] = nil
-    global.peer_addr_[1] = nil
-
-    global.our_challenge_control = make(chan VMonitorChallenge)
-    global.their_challenge_control = make(chan VMonitorChallenge)
-    global.peer_addr_control = make(chan VMonitorPeer)
-    global.data_ch = make(chan VMonitorData)
+    global := VMonitor{
+                    [2]string{"None", "None"},
+                    [2]string{"None", "None"},
+                    [2]*net.UDPAddr{nil, nil},
+                    make(chan VMonitorChallenge),
+                    make(chan VMonitorChallenge),
+                    make(chan VMonitorPeer),
+                    make(chan VMonitorData),
+    }
 
     go global.handler()
-    return global
+    return &global
 }
 
 // Only this goroutine touches private data
