@@ -590,9 +590,7 @@ func main() {
 
     // Main event loop
 
-    for {
-        event := <-ch;
-
+    for event := range ch {
         // handle these first so the log reflects the updated link timeouts
         switch event.name {
             case "recv1":
