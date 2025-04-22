@@ -479,6 +479,8 @@ func parse(cfgfile string) (string, map[string]string, map[string]int) {
 // Main function
 
 func main() {
+    log.SetFlags(log.Flags() &^ (log.Ldate | log.Ltime))
+
     if len(os.Args) < 3 || (os.Args[2] != "client" && os.Args[2] != "server") {
         log.Fatal("Usage: vmonitor <config file> <client|server>")
     }
