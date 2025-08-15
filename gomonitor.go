@@ -52,7 +52,7 @@ type TimeoutCallback func (*Timeout)
 func NewTimeout(avgto time.Duration, fudge time.Duration, callback TimeoutCallback) (*Timeout) {
     timeout := Timeout{avgto, fudge, nil, false, time.Now(), callback, make(chan TimeoutControl), make(chan TimeoutInfo)}
     go timeout._handler()
-    timeout._restart()
+    defer timeout.restart()
     return &timeout
 }
 
