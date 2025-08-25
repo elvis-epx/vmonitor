@@ -65,11 +65,12 @@ func NewTimeout2(avgto time.Duration, fudge time.Duration, cbch chan Event, msg 
 
 func (timeout *Timeout) _handler() {
     // Only this goroutine, _handle_command and _restart can touch Timeout private data
+loop:
     for {
         select {
         case cmd := <- timeout.control:
            if !timeout._handle_command(cmd) {
-                break
+                break loop
             }
         case timeout.info <- TimeoutInfo{timeout.eta_, timeout.alive_}:
             continue
