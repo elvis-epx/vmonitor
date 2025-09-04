@@ -80,6 +80,9 @@ loop:
 
 func (timeout *Timeout) _handle_command(cmd TimeoutControl) (bool) {
     switch cmd.name {
+    case "refresh":
+        // exists just to make select generate a new TimeoutInfo
+        break
     case "reset":
         timeout.avgto_ = cmd.avgto
         timeout.fudge_ = cmd.fudge
@@ -137,11 +140,13 @@ func (timeout *Timeout) reset(avgto time.Duration, fudge time.Duration) {
 }
 
 func (timeout *Timeout) alive() (bool) {
+    timeout.control <- TimeoutControl{"refresh", 0, 0}
     info := <- timeout.info
     return info.alive
 }
 
 func (timeout *Timeout) remaining() (time.Duration) {
+    timeout.control <- TimeoutControl{"refresh", 0, 0}
     info := <- timeout.info
     if !info.alive {
         return 0
