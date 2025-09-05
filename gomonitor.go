@@ -2,7 +2,6 @@ package main
 
 import (
     "fmt"
-    "net"
     "os"
     "time"
     "log"
@@ -92,7 +91,7 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
 type VMonitor struct {
     our_challenge_ [2]string
     their_challenge_ [2]string
-    peer_addr_ [2]*net.UDPAddr
+    peer_addr_ [2]string
 
     our_challenge_control chan VMonitorChallenge
     their_challenge_control chan VMonitorChallenge
@@ -104,7 +103,7 @@ type VMonitor struct {
 type VMonitorData struct {
     our_challenge [2]string
     their_challenge [2]string
-    peer_addr [2]*net.UDPAddr
+    peer_addr [2]string
 }
 
 type VMonitorChallenge struct {
@@ -114,14 +113,14 @@ type VMonitorChallenge struct {
 
 type VMonitorPeer struct {
     link int
-    addr *net.UDPAddr
+    addr string
 }
 
 func NewVMonitor() (*VMonitor) {
     global := VMonitor{
                     [2]string{"None", "None"},
                     [2]string{"None", "None"},
-                    [2]*net.UDPAddr{nil, nil},
+                    [2]string{"", ""},
                     make(chan VMonitorChallenge),
                     make(chan VMonitorChallenge),
                     make(chan VMonitorPeer),
@@ -165,7 +164,7 @@ func (global *VMonitor) their_challenge(link int) (string) {
     return (<-global.data_channel).their_challenge[link-1]
 }
 
-func (global *VMonitor) peer_addr(link int) (*net.UDPAddr) {
+func (global *VMonitor) peer_addr(link int) string {
     global.data_ch_ping <- struct{}{}
     return (<-global.data_channel).peer_addr[link-1]
 }
@@ -178,73 +177,63 @@ func (global *VMonitor) their_challenge_set(link int, challenge string) {
     global.their_challenge_control <- VMonitorChallenge{link-1, challenge}
 }
 
-func (global *VMonitor) peer_addr_set(link int, addr *net.UDPAddr) {
+func (global *VMonitor) peer_addr_set(link int, addr string) {
     global.peer_addr_control <- VMonitorPeer{link-1, addr}
 }
 
-// UDP packet receiver
+// Incoming UDP packet handler
 
-func eq_addr(addr1 *net.UDPAddr, addr2 *net.UDPAddr) (bool) {
-    return addr1.Port == addr2.Port && addr1.IP.Equal(addr2.IP)
-}
-
-func recvudp(global *VMonitor, persona string, conn *net.UDPConn, link int, secret []byte,
+func recvudp(global *VMonitor, persona string, link int, secret []byte,
+             packet UDPPacket,
              feedback chan Event, msg_goodpacket string, msg_goodresponse string) {
-    data := make([]byte, 1500, 1500)
 
-    for {
-        length, addr, err := conn.ReadFromUDP(data[0:])
-        if err != nil {
-            log.Fatal(err)
-        }
-
-        log.Print(link, ">")
-        challenge, response := parse_packet(link, secret, data[0:length])
-        if challenge == "" || response == "" {
-            continue
-        }
-
-        peer_addr := global.peer_addr(link)
-
-        if persona == "server" {
-            if peer_addr == nil || !eq_addr(peer_addr, addr) {
-                global.peer_addr_set(link, addr)
-                log.Print(link, "> Detected new peer addr: ", addr)
-            }
-        }
-
-        // packet received and valid, up to this point. Now, check challenges
-
-        global.their_challenge_set(link, challenge)
-        our_challenge := global.our_challenge(link)
-
-        msg := msg_goodpacket
-
-        if our_challenge == "None" {
-            log.Print(link, "> Not evaluating response")
-        } else if response == our_challenge {
-            log.Print(link, "> Good response")
-            msg = msg_goodresponse
-            global.our_challenge_set(link, "None")
-        } else if response == "None" {
-            log.Print(link, "> Null response (exchange incomplete)")
-        } else {
-            log.Print(link, "> Wrong response")
-        }
-
-        feedback <- Event{msg, nil}
+    log.Print(link, ">")
+    challenge, response := parse_packet(link, secret, packet.Data)
+    if challenge == "" || response == "" {
+        return
     }
+
+    peer_addr := global.peer_addr(link)
+
+    if persona == "server" {
+        packet_addr := packet.Addr.String()
+        if peer_addr == "" || peer_addr != packet_addr {
+            global.peer_addr_set(link, packet_addr)
+            log.Print(link, "> Detected new peer addr: ", packet_addr)
+        }
+    }
+
+    // packet received and valid, up to this point. Now, check challenges
+
+    global.their_challenge_set(link, challenge)
+    our_challenge := global.our_challenge(link)
+
+    msg := msg_goodpacket
+
+    if our_challenge == "None" {
+        log.Print(link, "> Not evaluating response")
+    } else if response == our_challenge {
+        log.Print(link, "> Good response")
+        msg = msg_goodresponse
+        global.our_challenge_set(link, "None")
+    } else if response == "None" {
+        log.Print(link, "> Null response (exchange incomplete)")
+    } else {
+        log.Print(link, "> Wrong response")
+    }
+
+    feedback <- Event{msg, nil}
 }
 
 // UDP packet sender
 
-func sendudp(global *VMonitor, link int, secret []byte, conn *net.UDPConn, addr *net.UDPAddr) {
+func sendudp(global *VMonitor, link int, secret []byte, conn *UDPServer, addr string) {
     if global.our_challenge(link) == "None" {
         global.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
     }
     packet := gen_packet(link, secret, global.our_challenge(link), global.their_challenge(link)) 
 
-    _, err := conn.WriteToUDP(packet, addr)
+    err := conn.Send(addr, packet)
     if err != nil {
         log.Print(err) // non-fatal
     } else {
@@ -252,9 +241,9 @@ func sendudp(global *VMonitor, link int, secret []byte, conn *net.UDPConn, addr 
     }
 }
 
-func send_ping(global *VMonitor, link int, conn *net.UDPConn, secret []byte) {
+func send_ping(global *VMonitor, link int, conn *UDPServer, secret []byte) {
     addr := global.peer_addr(link)
-    if addr == nil {
+    if addr == "" {
         log.Print("Link ", link, ": peer address still unknown")
         return
     }
@@ -386,25 +375,25 @@ func main() {
         remote = client
     }
 
-    localaddr1, err := net.ResolveUDPAddr("udp", local[0])
+    err := CheckUDPAddr(local[0])
 
     if err != nil {
         log.Fatal(err)
     }
 
-    localaddr2, err := net.ResolveUDPAddr("udp", local[1])
+    err = CheckUDPAddr(local[1])
 
     if err != nil {
         log.Fatal(err)
     }
 
-    remoteaddr1, err := net.ResolveUDPAddr("udp", remote[0])
+    err = CheckUDPAddr(remote[0])
 
     if err != nil {
         log.Fatal(err)
     }
 
-    remoteaddr2, err := net.ResolveUDPAddr("udp", remote[1])
+    err = CheckUDPAddr(remote[1])
 
     if err != nil {
         log.Fatal(err)
@@ -413,17 +402,17 @@ func main() {
     global := NewVMonitor()
 
     if persona == "client" {
-        global.peer_addr_set(1, remoteaddr1)
-        global.peer_addr_set(2, remoteaddr2)
+        global.peer_addr_set(1, remote[0])
+        global.peer_addr_set(2, remote[1])
     }
 
-    socket1, err := net.ListenUDP("udp", localaddr1)
+    server1, err := NewUDPServer(local[0])
 
     if err != nil {
         log.Fatal(err)
     }
 
-    socket2, err := net.ListenUDP("udp", localaddr2)
+    server2, err := NewUDPServer(local[1])
 
     if err != nil {
         log.Fatal(err)
@@ -436,6 +425,27 @@ func main() {
 
     secret := []byte(cfgs["secret"])
 
+    // route events from UDPServer to our handler
+    go func() {
+        for evt := range server1.Events {
+            if evt.Name != "Recv" {
+                continue
+            }
+            packet := evt.Cargo.(UDPPacket)
+            recvudp(global, persona, 1, secret, packet, ch, "recv1", "Recv1")
+        }
+    }()
+    go func() {
+        for evt := range server2.Events {
+            if evt.Name != "Recv" {
+                continue
+            }
+            packet := evt.Cargo.(UDPPacket)
+            recvudp(global, persona, 2, secret, packet, ch, "recv2", "Recv2")
+        }
+    }()
+
+    // timeout for periodic pings
     send_to := NewTimeout(secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), ch, "send", nil)
 
     // timeouts for packet reception
@@ -456,10 +466,6 @@ func main() {
     // state change hysteresis
     hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), 0, ch, "hysteresis", nil)
 
-    // goroutines that receive beacon packets from remote side
-    go recvudp(global, persona, socket1, 1, secret, ch, "recv1", "Recv1")
-    go recvudp(global, persona, socket2, 2, secret, ch, "recv2", "Recv2")
-
     var current_state = "undefined"
 
     // Main event loop
@@ -478,8 +484,8 @@ func main() {
                 to2.Restart()
                 cto2.Restart()
             case "send":
-                send_ping(global, 1, socket1, secret)
-                send_ping(global, 2, socket2, secret)
+                send_ping(global, 1, server1, secret)
+                send_ping(global, 2, server2, secret)
                 send_to.Restart()
         }
 
