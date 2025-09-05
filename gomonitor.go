@@ -16,143 +16,8 @@ import (
     "os/exec"
     "gopkg.in/ini.v1"
     "github.com/ncruces/go-strftime"
+    . "epxx.co/vmonitor/goalarmeitbl"
 )
-
-// Base of "event loop"
-
-type Event struct {
-    name string
-}
-
-type TimeoutControl struct {
-    name string
-    avgto time.Duration
-    fudge time.Duration
-}
-
-type TimeoutInfo struct {
-    eta time.Time
-    alive bool
-}
-
-type Timeout struct {
-    avgto_ time.Duration
-    fudge_ time.Duration
-    impl_ *time.Timer
-    alive_ bool
-    eta_ time.Time
-    callback_ TimeoutCallback
-
-    control chan TimeoutControl
-    info chan TimeoutInfo
-}
-
-type TimeoutCallback func (*Timeout)
-
-func NewTimeout(avgto time.Duration, fudge time.Duration, callback TimeoutCallback) (*Timeout) {
-    timeout := Timeout{avgto, fudge, nil, false, time.Now(), callback, make(chan TimeoutControl), make(chan TimeoutInfo)}
-    go timeout._handler()
-    defer timeout.restart()
-    return &timeout
-}
-
-func NewTimeout2(avgto time.Duration, fudge time.Duration, cbch chan Event, msg string) (*Timeout) {
-    cb := func(_ *Timeout) {
-        cbch <- Event{msg}
-    }
-    return NewTimeout(avgto, fudge, cb)
-}
-
-func (timeout *Timeout) _handler() {
-    // Only this goroutine, _handle_command and _restart can touch Timeout private data
-loop:
-    for {
-        select {
-        case cmd := <- timeout.control:
-           if !timeout._handle_command(cmd) {
-                break loop
-            }
-        case timeout.info <- TimeoutInfo{timeout.eta_, timeout.alive_}:
-            continue
-        }
-    }
-}
-
-func (timeout *Timeout) _handle_command(cmd TimeoutControl) (bool) {
-    switch cmd.name {
-    case "refresh":
-        // exists just to make select generate a new TimeoutInfo
-        break
-    case "reset":
-        timeout.avgto_ = cmd.avgto
-        timeout.fudge_ = cmd.fudge
-        timeout._restart()
-    case "restart":
-        timeout._restart()
-    case "trigger":
-        timeout.alive_ = false
-        // callback must be in a goroutine because it may reconfigure the Timeout itself
-        // which would cause a deadlock due to unbuffered control channel, if called in
-        // the timer goroutine context
-        go timeout.callback_(timeout)
-    case "stop":
-        timeout.impl_.Stop()
-        timeout.alive_ = false
-    case "free":
-        timeout.impl_.Stop()
-        timeout.alive_ = false
-        return false
-    }
-    return true
-}
-
-func (timeout *Timeout) _restart() {
-    if timeout.impl_ != nil {
-        timeout.impl_.Stop()
-    }
-
-    relative_eta := timeout.avgto_ + 2 * timeout.fudge_ * time.Duration(rand.Float32() - 0.5)
-    timeout.eta_ = time.Now().Add(relative_eta)
-    timeout.alive_ = true 
-
-    timeout.impl_ = time.AfterFunc(relative_eta, func() {
-        // goroutine context; make sure it goes through the control channel
-        timeout.control <- TimeoutControl{"trigger", 0, 0}
-    })
-}
-
-// public methods for Timeout
-
-func (timeout *Timeout) stop() {
-    timeout.control <- TimeoutControl{"stop", 0, 0}
-}
-
-func (timeout *Timeout) free() {
-    timeout.control <- TimeoutControl{"free", 0, 0}
-}
-
-func (timeout *Timeout) restart() {
-    timeout.control <- TimeoutControl{"restart", 0, 0}
-}
-
-func (timeout *Timeout) reset(avgto time.Duration, fudge time.Duration) {
-    timeout.control <- TimeoutControl{"reset", avgto, fudge}
-}
-
-func (timeout *Timeout) alive() (bool) {
-    timeout.control <- TimeoutControl{"refresh", 0, 0}
-    info := <- timeout.info
-    return info.alive
-}
-
-func (timeout *Timeout) remaining() (time.Duration) {
-    timeout.control <- TimeoutControl{"refresh", 0, 0}
-    info := <- timeout.info
-    if !info.alive {
-        return 0
-    }
-    return info.eta.Sub(time.Now()) 
-}
 
 // Packet codec
 
@@ -367,7 +232,7 @@ func recvudp(global *VMonitor, persona string, conn *net.UDPConn, link int, secr
             log.Print(link, "> Wrong response")
         }
 
-        feedback <- Event{msg}
+        feedback <- Event{msg, nil}
     }
 }
 
@@ -567,36 +432,29 @@ func main() {
     ch := make(chan Event)
 
     // using a goroutine this since ch is unbuffered
-    go func() { ch <- Event{"start"} }()
+    go func() { ch <- Event{"start", nil} }()
 
     secret := []byte(cfgs["secret"])
 
-    send_to := NewTimeout(secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), func (to *Timeout) {
-        // a timeout handler runs in goroutine context
-        send_ping(global, 1, socket1, secret)
-        send_ping(global, 2, socket2, secret)
-        // try to log after packets have been sent and timer has been restarted
-        go func() { ch <- Event{"send"} }()
-        to.restart()
-    });
+    send_to := NewTimeout(secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), ch, "send", nil)
 
     // timeouts for packet reception
-    to1 := NewTimeout2(secs(cfgi["timeout"]), 0, ch, "timeout1")
-    to2 := NewTimeout2(secs(cfgi["timeout"]), 0, ch, "timeout2")
+    to1 := NewTimeout(secs(cfgi["timeout"]), 0, ch, "timeout1", nil)
+    to2 := NewTimeout(secs(cfgi["timeout"]), 0, ch, "timeout2", nil)
 
     // timeouts for challenge response
-    cto1 := NewTimeout2(secs(cfgi["ctimeout"]), 0, ch, "ctimeout1")
-    cto2 := NewTimeout2(secs(cfgi["ctimeout"]), 0, ch, "ctimeout2")
+    cto1 := NewTimeout(secs(cfgi["ctimeout"]), 0, ch, "ctimeout1", nil)
+    cto2 := NewTimeout(secs(cfgi["ctimeout"]), 0, ch, "ctimeout2", nil)
 
     // heartbeats
-    heartbeat_timer := NewTimeout2(secs(cfgi["heartbeat"]), 0, ch, "heartbeat")
+    heartbeat_timer := NewTimeout(secs(cfgi["heartbeat"]), 0, ch, "heartbeat", nil)
     var hard_heartbeat_timer *Timeout = nil
     if cfgi["hard_heartbeat"] > 0 {
-        hard_heartbeat_timer = NewTimeout2(secs(cfgi["hard_heartbeat"]), 0, ch, "hard_heartbeat")
+        hard_heartbeat_timer = NewTimeout(secs(cfgi["hard_heartbeat"]), 0, ch, "hard_heartbeat", nil)
     }
 
     // state change hysteresis
-    hysteresis_timer := NewTimeout2(secs(cfgi["initial_hysteresis"]), 0, ch, "hysteresis")
+    hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), 0, ch, "hysteresis", nil)
 
     // goroutines that receive beacon packets from remote side
     go recvudp(global, persona, socket1, 1, secret, ch, "recv1", "Recv1")
@@ -608,37 +466,41 @@ func main() {
 
     for event := range ch {
         // handle these first so the log reflects the updated link timeouts
-        switch event.name {
+        switch event.Name {
             case "recv1":
-                to1.restart()
+                to1.Restart()
             case "Recv1":
-                to1.restart()
-                cto1.restart()
+                to1.Restart()
+                cto1.Restart()
             case "recv2":
-                to2.restart()
+                to2.Restart()
             case "Recv2":
-                to2.restart()
-                cto2.restart()
+                to2.Restart()
+                cto2.Restart()
+            case "send":
+                send_ping(global, 1, socket1, secret)
+                send_ping(global, 2, socket2, secret)
+                send_to.Restart()
         }
 
         log.Print("State ", current_state,
-                    " to1 ", int(to1.remaining().Seconds()),
-                    "/", int(cto1.remaining().Seconds()),
-                    " to2 ", int(to2.remaining().Seconds()),
-                    "/", int(cto2.remaining().Seconds()),
-                    " hys ", int(hysteresis_timer.remaining().Seconds()),
-                    " ping ", int(send_to.remaining().Seconds()),
-                    " event ", event.name)
+                    " to1 ", int(to1.Remaining().Seconds()),
+                    "/", int(cto1.Remaining().Seconds()),
+                    " to2 ", int(to2.Remaining().Seconds()),
+                    "/", int(cto2.Remaining().Seconds()),
+                    " hys ", int(hysteresis_timer.Remaining().Seconds()),
+                    " ping ", int(send_to.Remaining().Seconds()),
+                    " event ", event.Name)
 
-        heartbeat_timer.restart()
+        heartbeat_timer.Restart()
 
-        if hysteresis_timer.alive() {
+        if hysteresis_timer.Alive() {
             continue
         }
 
         // determine whether links are up or down based on packet recv timeouts
-        link1_up := to1.alive() && cto1.alive()
-        link2_up := to2.alive() && cto2.alive()
+        link1_up := to1.Alive() && cto1.Alive()
+        link2_up := to2.Alive() && cto2.Alive()
 
         i := 0
         if link1_up {
@@ -654,8 +516,8 @@ func main() {
         if new_state != current_state {
             current_state = new_state
             log.Print("New state: ", current_state)
-            hysteresis_timer.reset(secs(cfgi["hysteresis"]), 0)
-        } else if hard_heartbeat_timer != nil && !hard_heartbeat_timer.alive() {
+            hysteresis_timer.Reset(secs(cfgi["hysteresis"]), 0)
+        } else if hard_heartbeat_timer != nil && !hard_heartbeat_timer.Alive() {
             log.Print("Reapply state: ", current_state)
         } else {
             continue
@@ -672,7 +534,7 @@ func main() {
         }
 
         if hard_heartbeat_timer != nil {
-            hard_heartbeat_timer.restart()
+            hard_heartbeat_timer.Restart()
         }
     }
 }
