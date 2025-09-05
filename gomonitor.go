@@ -232,7 +232,8 @@ type VMonitor struct {
     our_challenge_control chan VMonitorChallenge
     their_challenge_control chan VMonitorChallenge
     peer_addr_control chan VMonitorPeer
-    data_ch chan VMonitorData
+    data_channel chan VMonitorData
+    data_ch_ping chan struct{}
 }
 
 type VMonitorData struct {
@@ -260,6 +261,7 @@ func NewVMonitor() (*VMonitor) {
                     make(chan VMonitorChallenge),
                     make(chan VMonitorPeer),
                     make(chan VMonitorData),
+                    make(chan struct{}),
     }
 
     go global.handler()
@@ -271,8 +273,11 @@ func NewVMonitor() (*VMonitor) {
 func (global *VMonitor) handler() {
     for {
         select {
-        case global.data_ch <- VMonitorData{global.our_challenge_, global.their_challenge_, global.peer_addr_}:
-            continue 
+        case <-global.data_ch_ping:
+            // refresh VMonitorData
+            break
+        case global.data_channel <- VMonitorData{global.our_challenge_, global.their_challenge_, global.peer_addr_}:
+            break
         case oc := <- global.our_challenge_control:
             global.our_challenge_[oc.link] = oc.challenge       
         case tc := <- global.their_challenge_control:
@@ -286,15 +291,18 @@ func (global *VMonitor) handler() {
 // public methods to manipulate shared global state
 
 func (global *VMonitor) our_challenge(link int) (string) {
-    return (<-global.data_ch).our_challenge[link-1]
+    global.data_ch_ping <- struct{}{}
+    return (<-global.data_channel).our_challenge[link-1]
 }
 
 func (global *VMonitor) their_challenge(link int) (string) {
-    return (<-global.data_ch).their_challenge[link-1]
+    global.data_ch_ping <- struct{}{}
+    return (<-global.data_channel).their_challenge[link-1]
 }
 
 func (global *VMonitor) peer_addr(link int) (*net.UDPAddr) {
-    return (<-global.data_ch).peer_addr[link-1]
+    global.data_ch_ping <- struct{}{}
+    return (<-global.data_channel).peer_addr[link-1]
 }
 
 func (global *VMonitor) our_challenge_set(link int, challenge string) {
