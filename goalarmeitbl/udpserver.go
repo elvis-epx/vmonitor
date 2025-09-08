@@ -45,7 +45,7 @@ func NewUDPServer(slocaladdr string) (*UDPServer, error) {
     h := new(UDPServer)
     h.conn = socket
 
-    h.queue_depth = 1
+    h.queue_depth = 0
     h.recv_buffer_size = 1500
     h.Events = make(chan Event, h.queue_depth)
 
