@@ -219,7 +219,7 @@ func recvudp(global *VMonitor, persona string, link int, secret []byte,
     } else if response == "None" {
         log.Print(link, "> Null response (exchange incomplete)")
     } else {
-        log.Print(link, "> Wrong response")
+        log.Printf("%d> Wrong response, expected %s, received %s", link, our_challenge, response)
     }
 
     feedback <- Event{msg, nil}

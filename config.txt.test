@@ -17,8 +17,8 @@ link2_client = 127.0.0.1:55003
 ; heartbeat: log mark just to show that app is still running
 ; all times in seconds
 
-pingavg = 2
-pingvar = 1
+pingavg = 3
+pingvar = 2
 timeout = 8
 ctimeout = 10
 hysteresis = 60
