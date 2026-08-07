@@ -1,3 +1,6 @@
 vmonitor.log
 __pycache__/
 moo
+_build/
+deps/
+erl_crash.dump

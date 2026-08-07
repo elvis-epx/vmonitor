@@ -187,3 +187,29 @@ which takes care of all these things.
 Writing this version was basically a personal exercise, but it may become the reference implementation,
 since Go binaries run standalone, which is a lot more practical than installing Python and its
 dependencies.
+
+# Elixir version
+
+There is also a version written in Elixir, named `exmonitor` (source under `lib/`). Same wire
+protocol, so it interoperates with `vmonitor` and `gomonitor` interchangeably. Build it with:
+
+```
+mix escript.build
+```
+
+which produces an `exmonitor` executable at the repo root. Usage is the same as the other two:
+
+```
+./exmonitor configfile client
+./exmonitor configfile server
+```
+
+Like the Go version, `exmonitor` doesn't implement logging level/file/e-mail or daemon mode; those
+config items are read (so the same config file works unmodified) but ignored. Logging goes to
+stdout via Elixir's `Logger`.
+
+Architecturally it leans on OTP instead of imitating the Go/Python event loop by hand: each UDP
+socket is opened in active mode, so incoming datagrams and timer expirations both arrive as
+ordinary messages to a single `GenServer` (`Exmonitor.Engine`), which processes them one at a time.
+This was primarily written as a compact example of a small, real networked OTP application —
+config parsing, `:gen_udp`, `Process.send_after`-based timers, and an escript entry point.
