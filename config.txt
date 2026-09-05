@@ -3,6 +3,10 @@
 ; Bind addresses. Must be all different
 ; link1_client exchanges packets with link1_server only
 ; the same for link2_*
+;
+; Format is address:port, or iface:address:port to also bind the
+; socket to a specific network interface (SO_BINDTODEVICE, Linux only,
+; usually requires root). Example: eth0:127.0.0.1:55000
 
 link1_server = 127.0.0.1:55000
 link2_server = 127.0.0.1:55001

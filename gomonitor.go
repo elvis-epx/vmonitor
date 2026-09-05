@@ -2,6 +2,7 @@ package main
 
 import (
     "fmt"
+    "net"
     "os"
     "time"
     "log"
@@ -258,6 +259,33 @@ func secs(t int) (time.Duration) {
 
 // Config parsing
 
+// linkEndpoint is a parsed link1_server/link2_server/link1_client/link2_client
+// entry: an "address:port" pair, optionally prefixed with "iface:" to request
+// binding the local socket to that network interface via SO_BINDTODEVICE.
+type linkEndpoint struct {
+    iface string
+    addr string
+}
+
+// parseLinkEndpoint accepts either "address:port" or "iface:address:port".
+func parseLinkEndpoint(s string) (linkEndpoint, error) {
+    if _, err := net.ResolveUDPAddr("udp", s); err == nil {
+        return linkEndpoint{"", s}, nil
+    }
+
+    idx := strings.Index(s, ":")
+    if idx < 0 {
+        return linkEndpoint{}, fmt.Errorf("invalid address: %s", s)
+    }
+    iface, addr := s[:idx], s[idx+1:]
+
+    if _, err := net.ResolveUDPAddr("udp", addr); err != nil {
+        return linkEndpoint{}, fmt.Errorf("invalid address: %s", s)
+    }
+
+    return linkEndpoint{iface, addr}, nil
+}
+
 var list_cfgss = []string{"link1_server", "link2_server", "link1_client", "link2_client", "secret",
                             "link1_script", "link2_script", "link1_link2_script", "nolink_script"}
 var list_cfgip = []string{"pingavg", "pingvar", "timeout", "ctimeout", "heartbeat"}
@@ -361,11 +389,29 @@ func main() {
 
     var state_scripts = []string {cfgs["nolink_script"], cfgs["link1_script"], cfgs["link2_script"], cfgs["link1_link2_script"]}
     var states = []string{"NOLINK", "LINK1", "LINK2", "LINK1_LINK2"}
-    var server = []string {cfgs["link1_server"], cfgs["link2_server"]}
-    var client = []string {cfgs["link1_client"], cfgs["link2_client"]}
 
-    var local []string
-    var remote []string
+    link1_server, err := parseLinkEndpoint(cfgs["link1_server"])
+    if err != nil {
+        log.Fatal(err)
+    }
+    link2_server, err := parseLinkEndpoint(cfgs["link2_server"])
+    if err != nil {
+        log.Fatal(err)
+    }
+    link1_client, err := parseLinkEndpoint(cfgs["link1_client"])
+    if err != nil {
+        log.Fatal(err)
+    }
+    link2_client, err := parseLinkEndpoint(cfgs["link2_client"])
+    if err != nil {
+        log.Fatal(err)
+    }
+
+    var server = []linkEndpoint {link1_server, link2_server}
+    var client = []linkEndpoint {link1_client, link2_client}
+
+    var local []linkEndpoint
+    var remote []linkEndpoint
 
     if persona == "client" {
         local = client
@@ -375,44 +421,20 @@ func main() {
         remote = client
     }
 
-    err := CheckUDPAddr(local[0])
-
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    err = CheckUDPAddr(local[1])
-
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    err = CheckUDPAddr(remote[0])
-
-    if err != nil {
-        log.Fatal(err)
-    }
-
-    err = CheckUDPAddr(remote[1])
-
-    if err != nil {
-        log.Fatal(err)
-    }
-
     global := NewVMonitor()
 
     if persona == "client" {
-        global.peer_addr_set(1, remote[0])
-        global.peer_addr_set(2, remote[1])
+        global.peer_addr_set(1, remote[0].addr)
+        global.peer_addr_set(2, remote[1].addr)
     }
 
-    server1, err := NewUDPServer(local[0])
+    server1, err := NewUDPServerOnIface(local[0].addr, local[0].iface)
 
     if err != nil {
         log.Fatal(err)
     }
 
-    server2, err := NewUDPServer(local[1])
+    server2, err := NewUDPServerOnIface(local[1].addr, local[1].iface)
 
     if err != nil {
         log.Fatal(err)

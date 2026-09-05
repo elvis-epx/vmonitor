@@ -1,6 +1,7 @@
 package goalarmeitbl
 
 import (
+    "context"
     "net"
     "log"
     "sync"
@@ -28,19 +29,38 @@ func CheckUDPAddr(addr string) error {
 }
 
 func NewUDPServer(slocaladdr string) (*UDPServer, error) {
+    return NewUDPServerOnIface(slocaladdr, "")
+}
+
+// NewUDPServerOnIface behaves like NewUDPServer, but if iface is non-empty,
+// the socket is bound to that network interface (e.g. "eth0") via
+// SO_BINDTODEVICE before it is bound to slocaladdr. Only supported on Linux;
+// on other platforms, passing a non-empty iface returns an error.
+func NewUDPServerOnIface(slocaladdr string, iface string) (*UDPServer, error) {
     // FIXME allow configuration of queue depth for high-throughput applications
     // FIXME allow configuration of recv buffer size
 
-    localaddr, err := net.ResolveUDPAddr("udp", slocaladdr)
+    _, err := net.ResolveUDPAddr("udp", slocaladdr)
     if err != nil {
         return nil, err
     }
 
-    socket, err := net.ListenUDP("udp", localaddr)
+    lc := net.ListenConfig{}
+    if iface != "" {
+        ctrl, err := bindToDeviceControl(iface)
+        if err != nil {
+            return nil, err
+        }
+        lc.Control = ctrl
+    }
+
+    conn, err := lc.ListenPacket(context.Background(), "udp", slocaladdr)
 
     if err != nil {
         return nil, err
     }
+
+    socket := conn.(*net.UDPConn)
 
     h := new(UDPServer)
     h.conn = socket
