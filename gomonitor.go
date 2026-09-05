@@ -262,6 +262,9 @@ func secs(t int) (time.Duration) {
 // linkEndpoint is a parsed link1_server/link2_server/link1_client/link2_client
 // entry: an "address:port" pair, optionally prefixed with "iface:" to request
 // binding the local socket to that network interface via SO_BINDTODEVICE.
+// When iface is set, the address is kept in config (e.g. for the user's own
+// reference, or 0.0.0.0 when they don't care) but is not actually bound to;
+// see NewUDPServerOnIface.
 type linkEndpoint struct {
     iface string
     addr string

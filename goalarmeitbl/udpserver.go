@@ -34,8 +34,11 @@ func NewUDPServer(slocaladdr string) (*UDPServer, error) {
 
 // NewUDPServerOnIface behaves like NewUDPServer, but if iface is non-empty,
 // the socket is bound to that network interface (e.g. "eth0") via
-// SO_BINDTODEVICE before it is bound to slocaladdr. Only supported on Linux;
-// on other platforms, passing a non-empty iface returns an error.
+// SO_BINDTODEVICE. In that case the address portion of slocaladdr is not
+// actually bound to (SO_BINDTODEVICE already restricts traffic to the
+// interface); only its port is used, and the socket listens on the wildcard
+// address. Only supported on Linux; on other platforms, passing a non-empty
+// iface returns an error.
 func NewUDPServerOnIface(slocaladdr string, iface string) (*UDPServer, error) {
     // FIXME allow configuration of queue depth for high-throughput applications
     // FIXME allow configuration of recv buffer size
@@ -52,6 +55,12 @@ func NewUDPServerOnIface(slocaladdr string, iface string) (*UDPServer, error) {
             return nil, err
         }
         lc.Control = ctrl
+
+        _, port, err := net.SplitHostPort(slocaladdr)
+        if err != nil {
+            return nil, err
+        }
+        slocaladdr = net.JoinHostPort("", port)
     }
 
     conn, err := lc.ListenPacket(context.Background(), "udp", slocaladdr)
