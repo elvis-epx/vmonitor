@@ -2,6 +2,7 @@ package goalarmeitbl
 
 import (
     "context"
+    "fmt"
     "net"
     "log"
     "sync"
@@ -50,6 +51,10 @@ func NewUDPServerOnIface(slocaladdr string, iface string) (*UDPServer, error) {
 
     lc := net.ListenConfig{}
     if iface != "" {
+        if _, err := net.InterfaceByName(iface); err != nil {
+            return nil, fmt.Errorf("network interface %q not found: %w", iface, err)
+        }
+
         ctrl, err := bindToDeviceControl(iface)
         if err != nil {
             return nil, err
