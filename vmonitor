@@ -60,10 +60,11 @@ def do_script(status):
 
 
 class TratadorDatagrama(UDPServerHandler):
-    def __init__(self, observer, addr, link):
+    def __init__(self, observer, endpoint, link):
         self.observer = observer
         self.link = link
-        super().__init__(addr, "link%d" % link)
+        iface, addr, port = endpoint
+        super().__init__((addr, port), "link%d" % link, iface=iface)
 
     def recv_callback(self, addr, dgram):
         Log.debug("Received %s" % dgram)
@@ -88,7 +89,8 @@ class vmonitor:
 
         if config["persona"] == "client":
             self.peer_fixed = True
-            self.peer = [None, self.config["link1_server"], self.config["link2_server"]]
+            # peer address is (addr, port); drop the local-bind iface prefix
+            self.peer = [None, self.config["link1_server"][1:], self.config["link2_server"][1:]]
         else:
             # Client may be behind a NAT
             self.peer_fixed = False
@@ -230,22 +232,30 @@ def prechki(item, cfg):
         usage()
 
 def parsecfgaddr(item, cfg):
+    # Accepts "addr:port", or "iface:addr:port" to also bind the local socket
+    # to a specific network interface (SO_BINDTODEVICE, Linux only, usually
+    # requires root). When iface is given, the address is kept but not bound
+    # to; use 0.0.0.0 if you don't know/care about the interface's IP.
+    err = "%s must be in config as [iface:]addr:port" % item
     if item not in cfg:
-        print("%s must be in config as addr:port" % item)
+        print(err)
         usage()
     ap = cfg[item].split(':')
+    iface = ""
+    if len(ap) == 3:
+        iface, ap = ap[0], ap[1:]
     if len(ap) != 2:
-        print("%s must be in config as addr:port" % item)
+        print(err)
         usage()
     try:
         addr, port = ap[0], int(ap[1])
     except ValueError:
-        print("%s must be in config as addr:port" % item)
+        print(err)
         usage()
     if port <= 0 or port >= 65535 or not addr:
-        print("%s must be in config as addr:port" % item)
+        print(err)
         usage()
-    return (addr, port)
+    return (iface, addr, port)
 
 def parse_config():
     if len(sys.argv) < 3:
@@ -359,4 +369,10 @@ if __name__ == '__main__':
 
     Log.info("vmonitor, persona = %s" % config["persona"])
 
-    vmonitor(config).run()
+    try:
+        mon = vmonitor(config)
+    except OSError as e:
+        Log.error("Cannot bind link socket: %s" % e)
+        sys.exit(1)
+
+    mon.run()

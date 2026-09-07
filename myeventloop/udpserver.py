@@ -4,16 +4,39 @@ import socket, time, datetime
 from abc import ABC, abstractmethod
 from . import Timeout, Handler, EventLoop
 
+
+def bind_to_device(sock, iface):
+    """
+    Bind `sock` to the network interface named `iface` via SO_BINDTODEVICE
+    (Linux only, usually requires root). Raises OSError with a clear message
+    if the platform lacks support or the interface does not exist.
+    """
+    if not hasattr(socket, "SO_BINDTODEVICE"):
+        raise OSError("binding to network interface %r is not supported "
+                      "on this platform" % iface)
+    try:
+        socket.if_nametoindex(iface)
+    except OSError:
+        raise OSError("network interface %r not found" % iface) from None
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE,
+                    iface.encode("ascii") + b"\0")
+
+
 class UDPServerHandler(Handler):
     """
     Handler specialization to encapsulate and handle UDP packets.
     This is an abstract class, and there are methods you are required
     to override to complete the implementation.
     """
-    def __init__(self, addr, label=None):
+    def __init__(self, addr, label=None, iface=None):
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+        if iface:
+            bind_to_device(sock, iface)
+            # SO_BINDTODEVICE already restricts traffic to the interface, so
+            # bind the wildcard address and keep only the configured port.
+            addr = ("", addr[1])
         sock.bind(addr)
         label = label or ("%s:%d" % addr)
         super().__init__(label, sock, socket.error)

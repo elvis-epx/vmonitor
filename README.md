@@ -53,6 +53,12 @@ For each side and link, you need to supply a different address:port combination,
 making a total of four. If only the client is multihomed, and the server
 has only one IP, use different ports for the server pairs.
 
+Each of the four entries may optionally be written as `iface:address:port`
+to bind the local socket to a specific network interface via SO_BINDTODEVICE
+(Linux only, usually requires root). SO_BINDTODEVICE already restricts traffic
+to that interface, so the address is not actually bound to; use `0.0.0.0` when
+you don't know or care about the interface's IP, e.g. `eth0:0.0.0.0:55000`.
+
 Make sure you fill the 'secret' parameter with a unique passphrase, and keep
 it secret! This is used to check packets indeed came from your VMonitor
 counterpart. (The original version didn't need this feature because it 
