@@ -98,6 +98,9 @@ func (timeout *Timeout) Reset(avgto time.Duration, fudge time.Duration) {
 
 // Stop and free timeout. This timeout won't post events after the call returns.
 func (timeout *Timeout) Free() {
+    if timeout == nil {
+        return
+    }
     timeout.mutex.Lock()
     timeout._stop()
     parent := timeout.parent

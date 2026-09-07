@@ -86,6 +86,7 @@ class vmonitor:
         self.our_challenge = [None, "None", "None"]
         self.their_challenge = [None, "None", "None"]
         self.status = "undefined"
+        self.debounce_timer = None
 
         if config["persona"] == "client":
             self.peer_fixed = True
@@ -162,15 +163,26 @@ class vmonitor:
 
         newstatus = ["NOLINK", "LINK1", "LINK2", "LINK1_LINK2"][to]
 
-        if newstatus == self.status:
-            return
-
-        self.status = newstatus
-        Log.warn("New status: %s" % self.status)
-        do_script(self.status)
-        self.hysteresis.reset(self.config["hysteresis"])
-        if self.hard_heartbeat:
-            self.hard_heartbeat.restart()
+        if newstatus != self.status:
+            if self.debounce_timer is None:
+                Log.info("New status detected, starting debounce: %s" % newstatus)
+                self.debounce_timer = Timeout.new("debounce", self.config["debounce"], self.handle_link_change)
+                return
+            elif self.debounce_timer.alive():
+                Log.info("Still in debounce for new status: %s" % newstatus)
+                return
+            else:
+                self.debounce_timer = None
+                self.status = newstatus
+                Log.warn("New status applied: %s" % self.status)
+                do_script(self.status)
+                self.hysteresis.reset(self.config["hysteresis"])
+                if self.hard_heartbeat:
+                    self.hard_heartbeat.restart()
+        else:
+            if self.debounce_timer is not None:
+                self.debounce_timer.cancel()
+                self.debounce_timer = None
 
     def run(self):
         eventloop = MyEventLoop(self)
@@ -305,7 +317,7 @@ def parse_config():
             print("Config %s should be a positive integer value" % name)
             usage()
 
-    for name in ('hysteresis', 'initial_hysteresis', 'hard_heartbeat'):
+    for name in ('hysteresis', 'initial_hysteresis', 'debounce', 'hard_heartbeat'):
         prechki(name, cfg)
         try:
             config[name] = int(cfg[name])

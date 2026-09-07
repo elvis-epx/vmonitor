@@ -291,8 +291,10 @@ func parseLinkEndpoint(s string) (linkEndpoint, error) {
 
 var list_cfgss = []string{"link1_server", "link2_server", "link1_client", "link2_client", "secret",
                             "link1_script", "link2_script", "link1_link2_script", "nolink_script"}
+// must be positive
 var list_cfgip = []string{"pingavg", "pingvar", "timeout", "ctimeout", "heartbeat"}
-var list_cfgi = []string{"hysteresis", "initial_hysteresis", "hard_heartbeat"}
+// can be zero
+var list_cfgi = []string{"hysteresis", "initial_hysteresis", "debounce", "hard_heartbeat"}
 
 func parse(cfgfile string) (string, map[string]string, map[string]int) {
 
@@ -491,6 +493,9 @@ func main() {
     // state change hysteresis
     hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), 0, ch, "hysteresis", nil)
 
+    // state change delay
+    var debounce_timer *Timeout = nil
+
     var current_state = "undefined"
 
     // Main event loop
@@ -542,17 +547,33 @@ func main() {
         }
 
         new_state := states[i]
-        new_state_script := state_scripts[i]
 
         if new_state != current_state {
-            current_state = new_state
-            log.Print("New state: ", current_state)
-            hysteresis_timer.Reset(secs(cfgi["hysteresis"]), 0)
-        } else if hard_heartbeat_timer != nil && !hard_heartbeat_timer.Alive() {
-            log.Print("Reapply state: ", current_state)
+            if debounce_timer == nil {
+                log.Print("New state detected, starting debounce: ", new_state)
+                debounce_timer = NewTimeout(secs(cfgi["debounce"]), 0, ch, "debounce", nil)
+                continue
+            } else if debounce_timer.Alive() {
+                log.Print("Still in debounce for new state: ", new_state)
+                continue
+            } else {
+                debounce_timer = nil
+                current_state = new_state
+                log.Print("New state applied: ", current_state)
+                hysteresis_timer.Reset(secs(cfgi["hysteresis"]), 0)
+            }
         } else {
-            continue
+            debounce_timer.Free()
+            debounce_timer = nil
+
+            if hard_heartbeat_timer != nil && !hard_heartbeat_timer.Alive() {
+                log.Print("Reapply state: ", current_state)
+            } else {
+                continue
+            }
         }
+
+        new_state_script := state_scripts[i]
 
         if new_state_script != "None" {
             log.Print("> Running state script ", new_state_script)

@@ -100,6 +100,13 @@ between state changes. For example, if timeout is 60s and hysteresis is 300s,
 the first reaction after steady state is 60s, but the next reaction will take
 300s.
 
+There is also "debounce". This is the time counted between state change
+detection and application. This is useful to e.g. wait a bit for the new state to settle.
+For example, if you lose two links at the same time, they would timeout at
+slightly different moments, and vmonitor may change state from LINK1\_LINK2
+to LINK2 and then to NOLINK (after the hysteresis timeout), when the right move
+would be to go straight to NOLINK.
+
 The "pingvar" parameter adds a fudge factor to "pingtime", making it less
 predictable and less likely to sync with other network events.
 

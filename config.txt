@@ -22,6 +22,7 @@ link2_client = 127.0.0.1:55003
 ; pingvar: fudge factor of ping time
 ; timeout: link is down if no pings after this time
 ; ctimeout: didn't get response to our challenge token
+; debounce: minimum time between change detected and new state applied
 ; hysteresis: minimum time between state transitions
 ; heartbeat: log mark just to show that app is still running
 ; all times in seconds
@@ -30,6 +31,7 @@ pingavg = 10
 pingvar = 5
 timeout = 30
 ctimeout = 45
+debounce = 16
 hysteresis = 120
 heartbeat = 60
 
