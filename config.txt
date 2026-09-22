@@ -35,6 +35,12 @@ debounce = 16
 hysteresis = 120
 heartbeat = 60
 
+; slo_pct: percentage of packets responded, with good response to challenge
+; slo_window: approximate moving average window in seconds
+
+slo_pct = 0
+slo_window = 300
+
 ; initial_hysteresis: time between start and call first script
 ; May be useful to wait until the system network is 100% configured
 ; before starting to monitor links and tweak with routes

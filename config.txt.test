@@ -4,8 +4,8 @@
 ; link1_client exchanges packets with link1_server only
 ; the same for link2_*
 
-link1_server = lo:0.0.0.0:55000
-link2_server = lo:0.0.0.0:55001
+link1_server = 127.0.0.1:55000
+link2_server = 127.0.0.1:55001
 link1_client = 127.0.0.1:55002
 link2_client = 127.0.0.1:55003
 
@@ -25,6 +25,12 @@ ctimeout = 11
 debounce = 6
 hysteresis = 60
 heartbeat = 120
+
+; slo_pct: percentage of packets responded, with good response to challenge
+; slo_window: approximate moving average window in seconds
+
+slo_pct = 90
+slo_window = 300
 
 ; initial_hysteresis: time between start and call first script
 ; May be useful to wait until the system network is 100% configured

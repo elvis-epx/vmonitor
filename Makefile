@@ -1,4 +1,4 @@
-all: builds/vmonitor.linux.amd64 builds/vmonitor.linux.arm64
+all: builds/vmonitor.linux.amd64 builds/vmonitor.linux.arm64 vmonitor
 
 clean:
 	rm -f builds/*

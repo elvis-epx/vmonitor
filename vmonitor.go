@@ -62,6 +62,10 @@ func parse_packet(link int, key []byte, bdata []byte, loglevel int) (string, str
         return "", "" 
     }
     
+    if loglevel >= 3 {
+        log.Print(link, "> Received ", tmp)
+    }
+
     if their_link != "1" && their_link != "2" {
         if loglevel >= 0 {
             log.Print(link, "> Bad link number ", their_link)
@@ -75,10 +79,6 @@ func parse_packet(link int, key []byte, bdata []byte, loglevel int) (string, str
             log.Print(link, "> Unexpected link number ", their_link, " ours is ", link)
         }
         return "", "" 
-    }
-
-    if loglevel >= 3 {
-        log.Print(link, "> Received ", tmp)
     }
 
     their_time_parsed, err := strftime.Parse("%Y-%m-%dT%H:%M:%S", their_time)
@@ -105,11 +105,13 @@ func parse_packet(link int, key []byte, bdata []byte, loglevel int) (string, str
 
 type VMonitor struct {
     our_challenge_ [2]string
+    our_challenge_regen_ [2]bool
     their_challenge_ [2]string
     peer_addr_ [2]string
 
     our_challenge_control chan VMonitorChallenge
     their_challenge_control chan VMonitorChallenge
+    our_challenge_regen_control chan VMonitorRegen
     peer_addr_control chan VMonitorPeer
     data_channel chan VMonitorData
     data_ch_ping chan struct{}
@@ -117,6 +119,7 @@ type VMonitor struct {
 
 type VMonitorData struct {
     our_challenge [2]string
+    our_challenge_regen [2]bool
     their_challenge [2]string
     peer_addr [2]string
 }
@@ -124,6 +127,11 @@ type VMonitorData struct {
 type VMonitorChallenge struct {
     link int
     challenge string
+}
+
+type VMonitorRegen struct {
+    link int
+    state bool
 }
 
 type VMonitorPeer struct {
@@ -134,10 +142,12 @@ type VMonitorPeer struct {
 func NewVMonitor() (*VMonitor) {
     global := VMonitor{
                     [2]string{"None", "None"},
+                    [2]bool{true, true},
                     [2]string{"None", "None"},
                     [2]string{"", ""},
                     make(chan VMonitorChallenge),
                     make(chan VMonitorChallenge),
+                    make(chan VMonitorRegen),
                     make(chan VMonitorPeer),
                     make(chan VMonitorData),
                     make(chan struct{}),
@@ -155,12 +165,15 @@ func (global *VMonitor) handler() {
         case <-global.data_ch_ping:
             // refresh VMonitorData
             break
-        case global.data_channel <- VMonitorData{global.our_challenge_, global.their_challenge_, global.peer_addr_}:
+        case global.data_channel <- VMonitorData{global.our_challenge_, global.our_challenge_regen_,
+                                                 global.their_challenge_, global.peer_addr_}:
             break
         case oc := <- global.our_challenge_control:
             global.our_challenge_[oc.link] = oc.challenge       
         case tc := <- global.their_challenge_control:
             global.their_challenge_[tc.link] = tc.challenge       
+        case ocr := <- global.our_challenge_regen_control:
+            global.our_challenge_regen_[ocr.link] = ocr.state
         case pa := <- global.peer_addr_control:
             global.peer_addr_[pa.link] = pa.addr
         }
@@ -174,6 +187,11 @@ func (global *VMonitor) our_challenge(link int) (string) {
     return (<-global.data_channel).our_challenge[link-1]
 }
 
+func (global *VMonitor) our_challenge_regen(link int) (bool) {
+    global.data_ch_ping <- struct{}{}
+    return (<-global.data_channel).our_challenge_regen[link-1]
+}
+
 func (global *VMonitor) their_challenge(link int) (string) {
     global.data_ch_ping <- struct{}{}
     return (<-global.data_channel).their_challenge[link-1]
@@ -185,7 +203,12 @@ func (global *VMonitor) peer_addr(link int) string {
 }
 
 func (global *VMonitor) our_challenge_set(link int, challenge string) {
+    global.our_challenge_regen_control <- VMonitorRegen{link-1, false}
     global.our_challenge_control <- VMonitorChallenge{link-1, challenge}
+}
+
+func (global *VMonitor) our_challenge_mark_regen(link int) {
+    global.our_challenge_regen_control <- VMonitorRegen{link-1, true}
 }
 
 func (global *VMonitor) their_challenge_set(link int, challenge string) {
@@ -230,20 +253,16 @@ func recvudp(global *VMonitor, persona string, link int, secret []byte,
 
     msg := msg_goodpacket
 
-    if our_challenge == "None" {
+    if response == "None" {
         if loglevel >= 3 {
-            log.Print(link, "> Not evaluating response")
+            log.Print(link, "> Null response (exchange incomplete)")
         }
     } else if response == our_challenge {
         if loglevel >= 3 {
             log.Print(link, "> Good response")
         }
         msg = msg_goodresponse
-        global.our_challenge_set(link, "None")
-    } else if response == "None" {
-        if loglevel >= 3 {
-            log.Print(link, "> Null response (exchange incomplete)")
-        }
+        global.our_challenge_mark_regen(link)
     } else {
         if loglevel >= 3 {
             log.Printf("%d> Wrong response, expected %s, received %s", link, our_challenge, response)
@@ -256,7 +275,7 @@ func recvudp(global *VMonitor, persona string, link int, secret []byte,
 // UDP packet sender
 
 func sendudp(global *VMonitor, link int, secret []byte, conn *UDPServer, addr string, loglevel int) {
-    if global.our_challenge(link) == "None" {
+    if global.our_challenge_regen(link) {
         global.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
     }
     packet := gen_packet(link, secret, global.our_challenge(link), global.their_challenge(link)) 
@@ -327,7 +346,7 @@ var list_cfgss = []string{"link1_server", "link2_server", "link1_client", "link2
 // must be positive
 var list_cfgip = []string{"pingavg", "pingvar", "timeout", "ctimeout", "heartbeat"}
 // can be zero
-var list_cfgi = []string{"hysteresis", "initial_hysteresis", "debounce", "hard_heartbeat", "loglevel"}
+var list_cfgi = []string{"hysteresis", "initial_hysteresis", "debounce", "hard_heartbeat", "loglevel", "slo_pct", "slo_window"}
 
 func parse(cfgfile string) (string, map[string]string, map[string]int) {
 
@@ -391,6 +410,10 @@ func parse(cfgfile string) (string, map[string]string, map[string]int) {
 
     if cfgi["ctimeout"] <= cfgi["timeout"] {
         return "ctimeout should be bigger than timeout", cfgs, cfgi
+    }
+    
+    if cfgi["slo_pct"] > 0 && cfgi["slo_window"] <= cfgi["pingavg"] * 10 {
+        return "if slo_pct > 0, slo_window should be bigger than 10 x pingavg", cfgs, cfgi
     }
     
     if cfgi["hysteresis"] <= cfgi["timeout"] {
@@ -505,8 +528,22 @@ func main() {
         }
     }()
 
+    slo := float64(cfgi["slo_pct"]) / 100.0
+    slomode := cfgi["slo_pct"] > 0
+    slomode_server := persona == "server" && slomode
+
     // timeout for periodic pings
-    send_to := NewTimeout(secs(cfgi["pingavg"]), secs(cfgi["pingvar"]), ch, "send", nil)
+    pingavg := cfgi["pingavg"]
+    pingvar := cfgi["pingvar"]
+    if slomode_server {
+        // In SLO mode server, this does not send packets, it only measures the time
+        // during which a packet whould have been received
+        pingavg = pingavg + pingvar + 1
+        pingvar = 0
+    }
+
+    send1_to := NewTimeout(secs(pingavg), secs(pingvar), ch, "send1", nil)
+    send2_to := NewTimeout(secs(pingavg), secs(pingvar), ch, "send2", nil)
 
     // timeouts for packet reception
     to1 := NewTimeout(secs(cfgi["timeout"]), 0, ch, "timeout1", nil)
@@ -515,6 +552,11 @@ func main() {
     // timeouts for challenge response
     cto1 := NewTimeout(secs(cfgi["ctimeout"]), 0, ch, "ctimeout1", nil)
     cto2 := NewTimeout(secs(cfgi["ctimeout"]), 0, ch, "ctimeout2", nil)
+
+    // SLIs
+    sli1 := 1.0
+    sli2 := 1.0
+    sli_weight := 2.0 / (1.0 + float64(cfgi["slo_window"]) / float64(cfgi["pingavg"]))
 
     // heartbeats
     heartbeat_timer := NewTimeout(secs(cfgi["heartbeat"]), 0, ch, "heartbeat", nil)
@@ -538,18 +580,68 @@ func main() {
         switch event.Name {
             case "recv1":
                 to1.Restart()
+                if slomode_server {
+                    // in SLO mode, server only sends packets when provoked
+                    send_ping(global, 1, server1, secret, cfgi["loglevel"])
+                    // Discount one packet in SLI
+                    sli1 = sli1 * (1.0 - sli_weight)
+                    send1_to.Restart()
+                }
             case "Recv1":
                 to1.Restart()
                 cto1.Restart()
+                if slomode_server {
+                    // in SLO mode, server only sends packets when provoked
+                    send_ping(global, 1, server1, secret, cfgi["loglevel"])
+                    // Add one packet to SLI
+                    sli1 = sli1 * (1.0 - sli_weight) + 1.0 * sli_weight
+                    send1_to.Restart()
+                } else {
+                    // Add one packet to SLI
+                    // We just add because (in principle) the average was already weigthed down on send
+                    sli1 = min(1.0, sli1 + 1.0 * sli_weight)
+                }
             case "recv2":
                 to2.Restart()
+                if slomode_server {
+                    send_ping(global, 2, server2, secret, cfgi["loglevel"])
+                    // Discount one packet in SLI
+                    sli2 = sli2 * (1.0 - sli_weight)
+                    send2_to.Restart()
+                }
             case "Recv2":
                 to2.Restart()
                 cto2.Restart()
-            case "send":
-                send_ping(global, 1, server1, secret, cfgi["loglevel"])
-                send_ping(global, 2, server2, secret, cfgi["loglevel"])
-                send_to.Restart()
+                if slomode_server {
+                    send_ping(global, 2, server2, secret, cfgi["loglevel"])
+                    // Add one packet to SLI
+                    sli2 = sli2 * (1.0 - sli_weight) + 1.0 * sli_weight
+                    send2_to.Restart()
+                } else {
+                    // Add one packet to SLI
+                    // We just add because (in principle) the average was already weigthed down on send
+                    sli2 = min(1.0, sli2 + 1.0 * sli_weight)
+                }
+            case "send1":
+                if slomode_server {
+                    // in SLO mode, server only sends packets when provoked, not here
+                    // Decay SLI anyway because a packet was expected meanwhile
+                } else {
+                    send_ping(global, 1, server1, secret, cfgi["loglevel"])
+                }
+                // Discount one packet in SLI
+                sli1 = sli1 * (1.0 - sli_weight)
+                send1_to.Restart()
+            case "send2":
+                if slomode_server {
+                    // in SLO mode, server only sends packets when provoked, not here
+                    // Decay SLI anyway because a packet was expected meanwhile
+                } else {
+                    send_ping(global, 2, server2, secret, cfgi["loglevel"])
+                }
+                // Discount one packet in SLI
+                sli2 = sli2 * (1.0 - sli_weight)
+                send2_to.Restart()
         }
 
         if cfgi["loglevel"] >= 3 {
@@ -559,7 +651,8 @@ func main() {
                     " to2 ", int(to2.Remaining().Seconds()),
                     "/", int(cto2.Remaining().Seconds()),
                     " hys ", int(hysteresis_timer.Remaining().Seconds()),
-                    " ping ", int(send_to.Remaining().Seconds()),
+                    " sli1 ", fmt.Sprintf("%.1f%%", 100 * sli1),
+                    " sli2 ", fmt.Sprintf("%.1f%%", 100 * sli2),
                     " event ", event.Name)
         }
 
@@ -570,8 +663,8 @@ func main() {
         }
 
         // determine whether links are up or down based on packet recv timeouts
-        link1_up := to1.Alive() && cto1.Alive()
-        link2_up := to2.Alive() && cto2.Alive()
+        link1_up := to1.Alive() && cto1.Alive() && (!slomode || sli1 >= slo)
+        link2_up := to2.Alive() && cto2.Alive() && (!slomode || sli2 >= slo)
 
         i := 0
         if link1_up {
