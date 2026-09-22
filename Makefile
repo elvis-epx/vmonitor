@@ -11,3 +11,6 @@ builds/vmonitor.linux.arm64: vmonitor.go goalarmeitbl/*.go
 
 vmonitor: vmonitor.go goalarmeitbl/*.go
 	go build -o vmonitor vmonitor.go
+
+e2e:
+	./e2e_test.py

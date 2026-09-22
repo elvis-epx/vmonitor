@@ -563,7 +563,13 @@ func main() {
     // SLIs
     sli1 := 1.0
     sli2 := 1.0
-    sli_weight := 2.0 / (1.0 + float64(cfgi["slo_window"]) / float64(cfgi["pingavg"]))
+    // slo_window is only validated (and meaningful) when slomode is on; with
+    // slomode off, keep the weight at 0 so the decay/credit updates below
+    // are no-ops instead of blowing up on a small or zero slo_window.
+    sli_weight := 0.0
+    if slomode {
+        sli_weight = 2.0 / (1.0 + float64(cfgi["slo_window"]) / float64(cfgi["pingavg"]))
+    }
 
     // heartbeats
     heartbeat_timer := NewTimeout(secs(cfgi["heartbeat"]), 0, ch, "heartbeat", nil)
