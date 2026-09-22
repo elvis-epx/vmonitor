@@ -96,6 +96,31 @@ so it is recommended to keep a ratio between timeout/ctimeout and pingavg,
 like 3:1. If your link is very lossy (like some wireless technologies are),
 increase this ratio accordingly.
 
+By default, a link is only considered down when packets stop arriving
+altogether (see timeout/ctimeout above). If you also want vmonitor to react
+to a link that is up but noticeably degraded, e.g. losing a meaningful
+fraction of packets, set 'slo_pct' to the minimum percentage of successful
+exchanges you are willing to tolerate, and 'slo_window' to roughly how many
+seconds of history that estimate should be averaged over. Set slo_pct to 0
+to disable this feature (the link is then judged by timeout/ctimeout alone,
+as before). slo_pct cannot be set above 98.
+
+slo_window needs to be picked with some care: too small a window relative
+to slo_pct makes vmonitor flag a perfectly healthy link as degraded, simply
+because of the noise inherent to a short moving average. As a rule of thumb:
+
+```
+slo_window >= 10 x pingavg x 100 / (100 - slo_pct)
+```
+
+For example, with pingavg = 2s and slo_pct = 90, slo_window should be at
+least 200 seconds. The closer slo_pct gets to 100, the bigger slo_window
+needs to be to stay stable.
+
+Note that vmonitor is not the ideal tool to monitor ISP SLOs or test for SLOs
+like 99.9%. The SLO it calculates is a rough estimate and should be used as a
+rough guide to test whether the link is usable.
+
 ## More about algorithm and protocol
 
 For each link, there is a timeout running. The initial value is the 'timeout'
@@ -125,6 +150,25 @@ would be to go straight to NOLINK.
 
 The "pingvar" parameter adds a fudge factor to "pingtime", making it less
 predictable and less likely to sync with other network events.
+
+The timeout/ctimeout mechanism above is good at catching a link that goes
+completely silent, but it says nothing about a link that stays "up" while
+losing a troubling fraction of its packets. For that, vmonitor can keep a
+moving estimate of packet delivery quality, the SLI (Service Level
+Indicator), and treat the link as down when the SLI falls below a target,
+the SLO (Service Level Objective), configured as 'slo_pct'.
+
+The SLI is an exponentially-weighted moving average: every expected packet
+exchange nudges it up (success) or down (loss/timeout), with weight
+
+```
+weight = 2 / (1 + slo_window / pingavg)
+```
+
+so 'slo_window' roughly controls how many seconds of history feed into the
+estimate -- a small slo_window reacts fast but is noisy, a big slo_window is
+smooth but slower to notice real degradation. See 'The config file' section
+above for the rule of thumb relating slo_window to slo_pct.
 
 The packet format is a human-readable message consisting of: link number,
 date/time, challenge, response, truncated HMAC.

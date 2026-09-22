@@ -412,8 +412,15 @@ func parse(cfgfile string) (string, map[string]string, map[string]int) {
         return "ctimeout should be bigger than timeout", cfgs, cfgi
     }
     
-    if cfgi["slo_pct"] > 0 && cfgi["slo_window"] <= cfgi["pingavg"] * 10 {
-        return "if slo_pct > 0, slo_window should be bigger than 10 x pingavg", cfgs, cfgi
+    if cfgi["slo_pct"] > 98 {
+        return "slo_pct should be 98 or less", cfgs, cfgi
+    }
+
+    // slo_window should grow past the base "10 x pingavg" rule as slo_pct
+    // approaches 100, since the EWMA needs a bigger window to stay stable
+    // when there is less room (100 - slo_pct) to absorb its own noise.
+    if cfgi["slo_pct"] > 0 && cfgi["slo_window"] * (100 - cfgi["slo_pct"]) <= cfgi["pingavg"] * 1000 {
+        return "slo_window should be bigger than 10 x pingavg x 100 / (100 - slo_pct)", cfgs, cfgi
     }
     
     if cfgi["hysteresis"] <= cfgi["timeout"] {

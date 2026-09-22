@@ -30,7 +30,7 @@ heartbeat = 120
 ; slo_window: approximate moving average window in seconds
 
 slo_pct = 90
-slo_window = 300
+slo_window = 330
 
 ; initial_hysteresis: time between start and call first script
 ; May be useful to wait until the system network is 100% configured
