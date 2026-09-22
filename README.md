@@ -15,7 +15,17 @@ policy changes appropriate for the state (using iptables, iproute2, etc.)
 With some work, vmonitor could be easily adapted to monitor "n" links,
 and do other tricks.
 
-## Basic algorithm
+## The basic algorithm
+
+VMonitor detects that a link is good by 
+
+a) Receiving UDP packets from the other side. This means the link is working in the
+download direction.
+
+b) Verifying the UDP packets have correct responses for the challenges we sent.
+This means the link is working in the upload direction.
+
+## Network layout
 
 VMonitor is meant to run on the routers at both sides. Each network link is expected to
 be connected to a different network interface. VMonitor binds to each interface 

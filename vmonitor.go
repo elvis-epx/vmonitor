@@ -37,11 +37,13 @@ func gen_packet(link int, key []byte, challenge string, response string) ([]byte
     return data
 }
 
-func parse_packet(link int, key []byte, bdata []byte) (string, string) {
+func parse_packet(link int, key []byte, bdata []byte, loglevel int) (string, string) {
     sdata := string(bdata)
     data := strings.Fields(sdata)
     if len(data) != 5 {
-        log.Print(link, "> Invalid packet format ", data)
+        if loglevel >= 3 {
+            log.Print(link, "> Invalid packet format ", data)
+        }
         return "", "" 
     }
 
@@ -51,36 +53,48 @@ func parse_packet(link int, key []byte, bdata []byte) (string, string) {
     response := data[3]
     hmac := data[4]
 
+    tmp := fmt.Sprintf("%s %s %s %s ", their_link, their_time, challenge, response)
+    exp_hmac := gen_hmac([]byte(tmp), key)
+    if exp_hmac != hmac {
+        if loglevel >= 3 {
+            log.Print(link, "> Inconsistent HMAC")
+        }
+        return "", "" 
+    }
+    
     if their_link != "1" && their_link != "2" {
-        log.Print(link, "> Bad link number ", their_link)
+        if loglevel >= 0 {
+            log.Print(link, "> Bad link number ", their_link)
+        }
         return "", "" 
     }
 
     ilink, _ := strconv.Atoi(their_link)
     if ilink != link {
-        log.Print(link, "> Unexpected link number ", their_link, " ours is ", link)
+        if loglevel >= 0 {
+            log.Print(link, "> Unexpected link number ", their_link, " ours is ", link)
+        }
         return "", "" 
     }
 
-    tmp := fmt.Sprintf("%s %s %s %s ", their_link, their_time, challenge, response)
-    exp_hmac := gen_hmac([]byte(tmp), key)
-    if exp_hmac != hmac {
-        log.Print(link, "> Inconsistent HMAC")
-        return "", "" 
+    if loglevel >= 3 {
+        log.Print(link, "> Received ", tmp)
     }
-    
-    log.Print(link, "> Received ", tmp)
 
     their_time_parsed, err := strftime.Parse("%Y-%m-%dT%H:%M:%S", their_time)
     if err != nil {
-        log.Print(link, "> Date parsing error: ", err)
+        if loglevel >= 0 {
+            log.Print(link, "> Date parsing error: ", err)
+        }
         return "", "" 
     }
 
     now := time.Now().UTC()
     diff := their_time_parsed.Sub(now)
     if math.Abs(diff.Seconds()) > 120 {
-        log.Print(link, "> Skewed date/time, here ", now, " theirs ", their_time)
+        if loglevel >= 0 {
+            log.Print(link, "> Skewed date/time, here ", now, " theirs ", their_time)
+        }
         return "", "" 
     }
 
@@ -186,10 +200,13 @@ func (global *VMonitor) peer_addr_set(link int, addr string) {
 
 func recvudp(global *VMonitor, persona string, link int, secret []byte,
              packet UDPPacket,
-             feedback chan Event, msg_goodpacket string, msg_goodresponse string) {
+             feedback chan Event, msg_goodpacket string, msg_goodresponse string,
+             loglevel int) {
 
-    log.Print(link, ">")
-    challenge, response := parse_packet(link, secret, packet.Data)
+    if loglevel >= 3 {
+        log.Print(link, ">")
+    }
+    challenge, response := parse_packet(link, secret, packet.Data, loglevel)
     if challenge == "" || response == "" {
         return
     }
@@ -200,7 +217,9 @@ func recvudp(global *VMonitor, persona string, link int, secret []byte,
         packet_addr := packet.Addr.String()
         if peer_addr == "" || peer_addr != packet_addr {
             global.peer_addr_set(link, packet_addr)
-            log.Print(link, "> Detected new peer addr: ", packet_addr)
+            if loglevel >= 2 {
+                log.Print(link, "> Detected new peer addr: ", packet_addr)
+            }
         }
     }
 
@@ -212,15 +231,23 @@ func recvudp(global *VMonitor, persona string, link int, secret []byte,
     msg := msg_goodpacket
 
     if our_challenge == "None" {
-        log.Print(link, "> Not evaluating response")
+        if loglevel >= 3 {
+            log.Print(link, "> Not evaluating response")
+        }
     } else if response == our_challenge {
-        log.Print(link, "> Good response")
+        if loglevel >= 3 {
+            log.Print(link, "> Good response")
+        }
         msg = msg_goodresponse
         global.our_challenge_set(link, "None")
     } else if response == "None" {
-        log.Print(link, "> Null response (exchange incomplete)")
+        if loglevel >= 3 {
+            log.Print(link, "> Null response (exchange incomplete)")
+        }
     } else {
-        log.Printf("%d> Wrong response, expected %s, received %s", link, our_challenge, response)
+        if loglevel >= 3 {
+            log.Printf("%d> Wrong response, expected %s, received %s", link, our_challenge, response)
+        }
     }
 
     feedback <- Event{msg, nil}
@@ -228,7 +255,7 @@ func recvudp(global *VMonitor, persona string, link int, secret []byte,
 
 // UDP packet sender
 
-func sendudp(global *VMonitor, link int, secret []byte, conn *UDPServer, addr string) {
+func sendudp(global *VMonitor, link int, secret []byte, conn *UDPServer, addr string, loglevel int) {
     if global.our_challenge(link) == "None" {
         global.our_challenge_set(link, fmt.Sprintf("%x", rand.Int32()))
     }
@@ -236,19 +263,25 @@ func sendudp(global *VMonitor, link int, secret []byte, conn *UDPServer, addr st
 
     err := conn.Send(addr, packet)
     if err != nil {
-        log.Print(err) // non-fatal
+        if loglevel >= 0 {
+            log.Print(err) // non-fatal
+        }
     } else {
-        log.Print("Link ", link, " sent ", string(packet))
+        if loglevel >= 3 {
+            log.Print("Link ", link, " sent ", string(packet))
+        }
     }
 }
 
-func send_ping(global *VMonitor, link int, conn *UDPServer, secret []byte) {
+func send_ping(global *VMonitor, link int, conn *UDPServer, secret []byte, loglevel int) {
     addr := global.peer_addr(link)
     if addr == "" {
-        log.Print("Link ", link, ": peer address still unknown")
+        if loglevel >= 1 {
+            log.Print("Link ", link, ": peer address still unknown")
+        }
         return
     }
-    sendudp(global, link, secret, conn, addr)
+    sendudp(global, link, secret, conn, addr, loglevel)
 }
 
 // Misc
@@ -294,7 +327,7 @@ var list_cfgss = []string{"link1_server", "link2_server", "link1_client", "link2
 // must be positive
 var list_cfgip = []string{"pingavg", "pingvar", "timeout", "ctimeout", "heartbeat"}
 // can be zero
-var list_cfgi = []string{"hysteresis", "initial_hysteresis", "debounce", "hard_heartbeat"}
+var list_cfgi = []string{"hysteresis", "initial_hysteresis", "debounce", "hard_heartbeat", "loglevel"}
 
 func parse(cfgfile string) (string, map[string]string, map[string]int) {
 
@@ -459,7 +492,7 @@ func main() {
                 continue
             }
             packet := evt.Cargo.(UDPPacket)
-            recvudp(global, persona, 1, secret, packet, ch, "recv1", "Recv1")
+            recvudp(global, persona, 1, secret, packet, ch, "recv1", "Recv1", cfgi["loglevel"])
         }
     }()
     go func() {
@@ -468,7 +501,7 @@ func main() {
                 continue
             }
             packet := evt.Cargo.(UDPPacket)
-            recvudp(global, persona, 2, secret, packet, ch, "recv2", "Recv2")
+            recvudp(global, persona, 2, secret, packet, ch, "recv2", "Recv2", cfgi["loglevel"])
         }
     }()
 
@@ -514,12 +547,13 @@ func main() {
                 to2.Restart()
                 cto2.Restart()
             case "send":
-                send_ping(global, 1, server1, secret)
-                send_ping(global, 2, server2, secret)
+                send_ping(global, 1, server1, secret, cfgi["loglevel"])
+                send_ping(global, 2, server2, secret, cfgi["loglevel"])
                 send_to.Restart()
         }
 
-        log.Print("State ", current_state,
+        if cfgi["loglevel"] >= 3 {
+            log.Print("State ", current_state,
                     " to1 ", int(to1.Remaining().Seconds()),
                     "/", int(cto1.Remaining().Seconds()),
                     " to2 ", int(to2.Remaining().Seconds()),
@@ -527,6 +561,7 @@ func main() {
                     " hys ", int(hysteresis_timer.Remaining().Seconds()),
                     " ping ", int(send_to.Remaining().Seconds()),
                     " event ", event.Name)
+        }
 
         heartbeat_timer.Restart()
 
@@ -550,16 +585,22 @@ func main() {
 
         if new_state != current_state {
             if debounce_timer == nil {
-                log.Print("New state detected, starting debounce: ", new_state)
+                if cfgi["loglevel"] >= 2 {
+                    log.Print("New state detected, starting debounce: ", new_state)
+                }
                 debounce_timer = NewTimeout(secs(cfgi["debounce"]), 0, ch, "debounce", nil)
                 continue
             } else if debounce_timer.Alive() {
-                log.Print("Still in debounce for new state: ", new_state)
+                if cfgi["loglevel"] >= 3 {
+                    log.Print("Still in debounce for new state: ", new_state)
+                }
                 continue
             } else {
                 debounce_timer = nil
                 current_state = new_state
-                log.Print("New state applied: ", current_state)
+                if cfgi["loglevel"] >= 2 {
+                    log.Print("New state applied: ", current_state)
+                }
                 hysteresis_timer.Reset(secs(cfgi["hysteresis"]), 0)
             }
         } else {
@@ -567,7 +608,9 @@ func main() {
             debounce_timer = nil
 
             if hard_heartbeat_timer != nil && !hard_heartbeat_timer.Alive() {
-                log.Print("Reapply state: ", current_state)
+                if cfgi["loglevel"] >= 3 {
+                    log.Print("Reapply state: ", current_state)
+                }
             } else {
                 continue
             }
@@ -576,13 +619,19 @@ func main() {
         new_state_script := state_scripts[i]
 
         if new_state_script != "None" {
-            log.Print("> Running state script ", new_state_script)
+            if cfgi["loglevel"] >= 3 {
+                log.Print("> Running state script ", new_state_script)
+            }
             cmd := exec.Command("/bin/bash", "-c", new_state_script) 
             if err := cmd.Run(); err != nil {
-                log.Print("> Script execution error: ", err)
+                if cfgi["loglevel"] >= 0 {
+                    log.Print("> Script execution error: ", err)
+                }
             }
         } else {
-            log.Print("> No script configured for state")
+            if cfgi["loglevel"] >= 3 {
+                log.Print("> No script configured for state")
+            }
         }
 
         if hard_heartbeat_timer != nil {

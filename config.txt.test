@@ -61,8 +61,4 @@ secret = abracadabra
 ; mailto: recipient of automatic e-mails
 ; mailfrom: putative sender of e-mails
 
-logfile = None
 loglevel = 3
-maillevel = 1
-mailfrom = None
-mailto = None
