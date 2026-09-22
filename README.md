@@ -1,6 +1,6 @@
 # VMonitor
 
-VMonitor is a simple Python script put together to monitor network links. It is a
+VMonitor is a simple app in Go, put together to monitor network links. It is a
 refactored version of a script I wrote in 2004 for a client.
 
 It is currently suited for the following scenario: multihomed router with two redundant
@@ -33,7 +33,13 @@ the same config file for both sides, but supply no-op scripts for the server.
 
 ## Basic usage 
 
-vmonitor configfile client|server [daemon]
+You can build it locally. For this, you need to install the Go toolchain. Another
+option is to use the ready-made binaries in the folder builds/. Assuming you have
+a binary in the current directory, you run it like this:
+
+```
+./vmonitor configfile client|server
+```
 
 The config file is meant to be the same for client and server. The
 second CLI argument says to vmonitor if it has the 'client' or 'server'
@@ -142,7 +148,7 @@ use cases in which the client is behind a NAT and/or has dynamic IP. This is
 not a security problem since only valid packets (with correct HMAC, etc.) are
 considered.
 
-## How to run as a service
+## How to run vmonitor as a service
 
 One option is to call it from `/etc/rc.local` with the `daemon` parameter. The
 app puts itself in background and redirects logging to the file configured in
@@ -156,7 +162,7 @@ with contents similar to the example below:
 Wants=network.target
 
 [Service]
-ExecStart=/etc/vmonitor/vmonitor /etc/vmonitor/config.txt client
+ExecStart=/usr/local/bin/vmonitor /etc/vmonitor/config.txt client
 User=root
 Group=root
 Restart=always
@@ -166,9 +172,9 @@ RestartSec=60
 WantedBy=multi-user.target
 ```
 
-Note the example above assumes you have copied the `vmonitor` project to the folder `/etc/vmonitor`.
-Make sure to use absolute paths for the scripts pointed by `config.txt`. Also, make sure you replace
-`client` by `server` at the server side.
+The example above assumes you copied the binary to `/usr/local/bin` and the config file to 
+`/etc/vmonitor/config.txt`. In the config file, make sure to use absolute paths for the scripts.
+Also, make sure you replace `client` by `server` at the server side.
 
 Then, enable and start the service:
 
@@ -184,19 +190,3 @@ or use a command similar to
 ```
 journalctl -u vmonitor.service -f
 ```
-
-# Go version
-
-`vmonitor` is written in Python and for now it is the reference implementation. We have written
-a version in Go, named `gomonitor`. The wire protocol is the same, so the two implementations are interoperable.
-You can build it by running `go build gomonitor.go`.
-
-Usage of `gomonitor` is almost exactly the same as `vmonitor`: same parameters, same config file.
-
-The Go version does not implement some features: logging level, logging to file, logging via e-mail,
-and daemon mode. The respective configurations are ignored. It is meant to run as a systemd service,
-which takes care of all these things.
-
-Writing this version was basically a personal exercise, but it may become the reference implementation,
-since Go binaries run standalone, which is a lot more practical than installing Python and its
-dependencies.
