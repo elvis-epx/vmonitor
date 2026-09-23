@@ -710,8 +710,13 @@ func main() {
                 hysteresis_timer.Reset(secs(cfgi["hysteresis"]), 0)
             }
         } else {
-            debounce_timer.Free()
-            debounce_timer = nil
+            if debounce_timer != nil {
+                if cfgi["loglevel"] >= 2 {
+                    log.Print("Cancelling debounce")
+                }
+                debounce_timer.Free()
+                debounce_timer = nil
+            }
 
             if hard_heartbeat_timer != nil && !hard_heartbeat_timer.Alive() {
                 if cfgi["loglevel"] >= 3 {
