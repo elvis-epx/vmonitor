@@ -1,0 +1,3 @@
+#!/bin/bash -x
+
+echo "SLOs $1 $2" >> slo.txt
