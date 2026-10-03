@@ -46,6 +46,7 @@ link1_link2_script = ./link1_link2_script
 link2_script = ./link2_script
 link1_script = ./link1_script
 nolink_script = ./nolink_script
+slo_report_script = ./slo_script
 
 ; hard_heartbeat: if higher than 0, calls again the script related to the
 ; current link status after the set time. If set, make sure the scripts are

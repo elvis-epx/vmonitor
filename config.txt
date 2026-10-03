@@ -56,6 +56,11 @@ link2_script = None
 link1_script = None
 nolink_script = None
 
+; Script run every minute to report link SLO. Called with 2 parameters:
+; SLO (as a percentage) for link 1 and SLO for link 2.
+
+slo_report_script = None
+
 ; hard_heartbeat: if higher than 0, calls again the script related to the
 ; current link status after the set time. If set, make sure the scripts are
 ; idempotent, that is, the same script can be called repeatedly without

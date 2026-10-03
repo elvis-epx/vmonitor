@@ -342,7 +342,8 @@ func parseLinkEndpoint(s string) (linkEndpoint, error) {
 }
 
 var list_cfgss = []string{"link1_server", "link2_server", "link1_client", "link2_client", "secret",
-                            "link1_script", "link2_script", "link1_link2_script", "nolink_script"}
+                            "link1_script", "link2_script", "link1_link2_script", "nolink_script",
+                            "slo_report_script"}
 // must be positive
 var list_cfgip = []string{"pingavg", "pingvar", "timeout", "ctimeout", "heartbeat"}
 // can be zero
@@ -578,6 +579,9 @@ func main() {
         hard_heartbeat_timer = NewTimeout(secs(cfgi["hard_heartbeat"]), 0, ch, "hard_heartbeat", nil)
     }
 
+    // report SLO
+    slo_report := NewTimeout(secs(60), 0, ch, "slo_report", nil)
+
     // state change hysteresis
     hysteresis_timer := NewTimeout(secs(cfgi["initial_hysteresis"]), 0, ch, "hysteresis", nil)
 
@@ -655,6 +659,23 @@ func main() {
                 // Discount one packet in SLI
                 sli2 = sli2 * (1.0 - sli_weight)
                 send2_to.Restart()
+            case "slo_report":
+                if slomode && cfgs["slo_report_script"] != "None" {
+                    if cfgi["loglevel"] >= 3 {
+                        log.Print("> Running script ", cfgs["slo_report_script"])
+                    }
+                    slo_report_cmd := fmt.Sprintf("%s %.1f %.1f",
+                                                 cfgs["slo_report_script"],
+                                                 sli1 * 100, sli2 * 100)
+                    cmd := exec.Command("/bin/bash", "-c", slo_report_cmd)
+                    if err := cmd.Run(); err != nil {
+                        if cfgi["loglevel"] >= 0 {
+                            log.Print("> Script execution error: ", err)
+                        }
+                    }
+                    slo_report.Restart()
+                }
+                continue
         }
 
         if cfgi["loglevel"] >= 3 {

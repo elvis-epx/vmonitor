@@ -45,6 +45,7 @@ link1_link2_script = None
 link2_script = None
 link1_script = None
 nolink_script = None
+slo_report_script = {slo_report_script}
 
 hard_heartbeat = {hard_heartbeat}
 
@@ -57,6 +58,7 @@ DEFAULTS = dict(
     pingavg=2, pingvar=1, timeout=6, ctimeout=8, debounce=2,
     hysteresis=15, heartbeat=30, initial_hysteresis=1,
     slo_pct=0, slo_window=0, hard_heartbeat=0, secret=SECRET,
+    slo_report_script="None",
 )
 
 
@@ -88,10 +90,10 @@ class LossyRelay(threading.Thread):
         self._sock.bind((LOCALHOST, listen_port))
         self._sock.settimeout(0.5)
         self._peer_addr = None
-        self._stop = threading.Event()
+        self._stop_event = threading.Event()
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._stop_event.is_set():
             try:
                 data, addr = self._sock.recvfrom(4096)
             except socket.timeout:
@@ -111,7 +113,7 @@ class LossyRelay(threading.Thread):
                 pass
 
     def stop(self):
-        self._stop.set()
+        self._stop_event.set()
         self._sock.close()
         self.join(timeout=2)
 
@@ -314,10 +316,84 @@ def case_slo_degraded_link(binpath: Path, workdir: Path) -> str:
     return f"SLO-only trip confirmed (to1={to1}s cto1={cto1}s still alive), link2 unaffected (min sli2={sli2_floor:.1f}%), recovered"
 
 
+def case_slo_report_script(binpath: Path, workdir: Path) -> str:
+    # slo_report fires on a fixed 60s period (hardcoded in vmonitor.go, not
+    # config-driven), so this case is inherently slow: it needs one report
+    # before inducing loss and a second one after, i.e. >=120s of real time.
+    base = 57140
+    relay_port = base + 9
+    real_link1_server = base
+    report_path = workdir / "d_reports.txt"
+    report_script = workdir / "d_report.sh"
+    report_script.write_text(
+        "#!/bin/bash\n"
+        f'printf "%s %s\\n" "$1" "$2" >> "{report_path}"\n'
+    )
+    report_script.chmod(0o755)
+
+    # slo_report_script is only set on the client config: the server would
+    # invoke it too (same code path runs on both personas) and interleave
+    # its own lines into the same file, which we don't need to assert on.
+    cfg = dict(
+        link1_server=f"{LOCALHOST}:{relay_port}", link2_server=f"{LOCALHOST}:{base+1}",
+        link1_client=f"{LOCALHOST}:{base+2}", link2_client=f"{LOCALHOST}:{base+3}",
+        slo_pct=90, slo_window=210,
+    )
+    server_cfg_values = dict(cfg, link1_server=f"{LOCALHOST}:{real_link1_server}")
+    client_cfg_values = dict(cfg, slo_report_script=str(report_script))
+    server_cfg = workdir / "d_server.txt"
+    client_cfg = workdir / "d_client.txt"
+    write_config(server_cfg, **server_cfg_values)
+    write_config(client_cfg, **client_cfg_values)
+
+    def reports():
+        if not report_path.exists():
+            return []
+        out = []
+        for line in report_path.read_text().splitlines():
+            parts = line.split()
+            if len(parts) == 2:
+                out.append((float(parts[0]), float(parts[1])))
+        return out
+
+    relay = LossyRelay(relay_port, real_link1_server)
+    relay.start()
+    server = VMonitorProcess(binpath, server_cfg, "server", workdir / "d_server.log")
+    client = VMonitorProcess(binpath, client_cfg, "client", workdir / "d_client.log")
+    try:
+        if not wait_for_applied_state(client, "LINK1_LINK2", 20):
+            raise TestFailure(f"never reached LINK1_LINK2 baseline (last state: {current_state(client)})")
+
+        if not wait_until(lambda: len(reports()) >= 1, 75):
+            raise TestFailure("slo_report_script was never invoked")
+        sli1_before, sli2_before = reports()[0]
+        if sli1_before < 90.0 or sli2_before < 90.0:
+            raise TestFailure(f"baseline report shows loss with no induced loss: sli1={sli1_before} sli2={sli2_before}")
+
+        relay.drop_pct = 1.0
+        baseline_count = len(reports())
+        if not wait_until(lambda: len(reports()) > baseline_count, 75):
+            raise TestFailure("slo_report_script was not invoked again after the link1 outage")
+        sli1_after, sli2_after = reports()[-1]
+        if sli1_after >= sli1_before:
+            raise TestFailure(f"reported sli1 did not drop after link1 outage: before={sli1_before} after={sli1_after}")
+        if sli2_after < 90.0:
+            raise TestFailure(f"link2's reported SLI was affected by link1's loss: sli2={sli2_after}")
+    finally:
+        client.stop()
+        server.stop()
+        relay.stop()
+    return (
+        f"slo_report_script invoked {len(reports())}x with sli1 {sli1_before:.1f}%->{sli1_after:.1f}% "
+        f"after outage, sli2 unaffected ({sli2_after:.1f}%)"
+    )
+
+
 CASES = [
     ("basic_connectivity", case_basic_connectivity),
     ("hard_failure_and_recovery", case_hard_failure_and_recovery),
     ("slo_degraded_link", case_slo_degraded_link),
+    ("slo_report_script", case_slo_report_script),
 ]
 
 
