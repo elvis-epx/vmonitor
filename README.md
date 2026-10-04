@@ -105,6 +105,13 @@ seconds of history that estimate should be averaged over. Set slo_pct to 0
 to disable this feature (the link is then judged by timeout/ctimeout alone,
 as before). slo_pct cannot be set above 98.
 
+Once a link is marked down due to SLO degradation, it is only considered
+up again after its SLI recovers to halfway between slo_pct and 100%. For
+example, with slo_pct = 90, the link goes down when the SLI falls below 90%
+and comes back up only when it reaches 95%. A link whose quality keeps
+hovering around slo_pct is therefore kept down, instead of flickering
+between up and down.
+
 slo_window needs to be picked with some care: too small a window relative
 to slo_pct makes vmonitor flag a perfectly healthy link as degraded, simply
 because of the noise inherent to a short moving average. As a rule of thumb:
@@ -169,6 +176,20 @@ so 'slo_window' roughly controls how many seconds of history feed into the
 estimate -- a small slo_window reacts fast but is noisy, a big slo_window is
 smooth but slower to notice real degradation. See 'The config file' section
 above for the rule of thumb relating slo_window to slo_pct.
+
+The SLO check has its own hysteresis, independent of the 'hysteresis'
+timer: the link goes down when SLI < slo, but only comes back when
+
+```
+SLI >= slo_up = slo + (100% - slo) / 2
+```
+
+Without it, a link whose SLI hovers right at the threshold would bounce
+between up and down. Worse, every brief dip below the threshold would be
+cancelled by the next brief recovery before the debounce timer expired, so
+a link that is chronically borderline might never be marked down at all.
+Common sense says such a link should be treated as down, and the higher
+recovery threshold enforces that.
 
 The packet format is a human-readable message consisting of: link number,
 date/time, challenge, response, truncated HMAC.

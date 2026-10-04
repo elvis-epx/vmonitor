@@ -183,6 +183,28 @@ def min_sli(proc: VMonitorProcess, link: int):
     return min(vals) if vals else None
 
 
+def held_down_above_slo(proc: VMonitorProcess, since_len: int, slo_pct: float):
+    # Returns the highest sli1 seen in a State line after since_len while the
+    # state was still LINK2 and the hysteresis timer had already expired, i.e.
+    # a moment where link1 was kept down only by the SLO recovery threshold.
+    # Lines after the SLO recovery log are skipped (state is still LINK2
+    # there while the debounce runs).
+    text = proc.text()[since_len:]
+    recovered = re.search(r"Link 1 SLI .* recovered above", text)
+    if recovered:
+        text = text[:recovered.start()]
+    best = None
+    for line in text.splitlines():
+        if not STATE_LINE_RE.match(line):
+            continue
+        m = re.search(r"^State (\S+) .* hys (\d+) sli1 ([0-9.]+)%", line)
+        if m and m.group(1) == "LINK2" and int(m.group(2)) == 0:
+            sli1 = float(m.group(3))
+            if sli1 >= slo_pct and (best is None or sli1 > best):
+                best = sli1
+    return best
+
+
 def remaining_at_last_applied(proc: VMonitorProcess, state: str):
     # Returns (to1, cto1, to2, cto2) remaining seconds from the last State
     # line before "New state applied: <state>", to check whether the
@@ -306,14 +328,26 @@ def case_slo_degraded_link(binpath: Path, workdir: Path) -> str:
             raise TestFailure(f"link2's SLI was affected by link1's loss (min sli2={sli2_floor})")
         since_recovery = len(client.text())
 
+        # Recovery requires sli1 to climb past slo_up = 95% (halfway between
+        # slo_pct and 100%), not merely back past slo_pct, so a link whose SLI
+        # flickers around slo_pct stays down.
         relay.drop_pct = 0.0
-        if not wait_for_applied_state(client, "LINK1_LINK2", 150, since_len=since_recovery):
+        if not wait_for_applied_state(client, "LINK1_LINK2", 240, since_len=since_recovery):
             raise TestFailure(f"did not recover to LINK1_LINK2 after restoring link1 (last state: {current_state(client)})")
+
+        held = held_down_above_slo(client, since_recovery, 90.0)
+        if held is None:
+            raise TestFailure("link1 was never seen held down with sli1 >= slo_pct: SLO recovery threshold not applied")
+        if "recovered above 95.0%" not in client.text()[since_recovery:]:
+            raise TestFailure("missing SLO recovered log line for link1")
     finally:
         client.stop()
         server.stop()
         relay.stop()
-    return f"SLO-only trip confirmed (to1={to1}s cto1={cto1}s still alive), link2 unaffected (min sli2={sli2_floor:.1f}%), recovered"
+    return (
+        f"SLO-only trip confirmed (to1={to1}s cto1={cto1}s still alive), link2 unaffected (min sli2={sli2_floor:.1f}%), "
+        f"held down past slo 90% (sli1 up to {held:.1f}%) until slo_up 95%, recovered"
+    )
 
 
 def case_slo_report_script(binpath: Path, workdir: Path) -> str:

@@ -305,6 +305,25 @@ func send_ping(global *VMonitor, link int, conn *UDPServer, secret []byte, logle
 
 // Misc
 
+// Returns whether the link should be (or stay) down due to SLO degradation.
+// Goes down when sli < slo, comes back only when sli >= slo_up.
+func slo_check(link int, sli float64, slo float64, slo_up float64, down bool, loglevel int) (bool) {
+    if !down && sli < slo {
+        if loglevel >= 2 {
+            log.Printf("Link %d SLI %.1f%% below SLO %.1f%%, degraded until %.1f%%",
+                       link, 100 * sli, 100 * slo, 100 * slo_up)
+        }
+        return true
+    }
+    if down && sli >= slo_up {
+        if loglevel >= 2 {
+            log.Printf("Link %d SLI %.1f%% recovered above %.1f%%", link, 100 * sli, 100 * slo_up)
+        }
+        return false
+    }
+    return down
+}
+
 func secs(t int) (time.Duration) {
     return time.Duration(t) * time.Second
 }
@@ -537,6 +556,11 @@ func main() {
     }()
 
     slo := float64(cfgi["slo_pct"]) / 100.0
+    // SLI must climb back above slo_up (halfway between slo and 100%) before a
+    // link degraded by SLO is considered up again. This keeps a link whose SLI
+    // flickers around slo down, instead of flapping (or never going down at all,
+    // since each brief recovery would cancel the debounce).
+    slo_up := slo + (1.0 - slo) / 2.0
     slomode := cfgi["slo_pct"] > 0
     slomode_server := persona == "server" && slomode
 
@@ -564,6 +588,9 @@ func main() {
     // SLIs
     sli1 := 1.0
     sli2 := 1.0
+    // links currently held down by SLO
+    slo_down1 := false
+    slo_down2 := false
     // slo_window is only validated (and meaningful) when slomode is on; with
     // slomode off, keep the weight at 0 so the decay/credit updates below
     // are no-ops instead of blowing up on a small or zero slo_window.
@@ -696,9 +723,15 @@ func main() {
             continue
         }
 
+        // SLO degradation with hysteresis: down below slo, up again only at slo_up
+        if slomode {
+            slo_down1 = slo_check(1, sli1, slo, slo_up, slo_down1, cfgi["loglevel"])
+            slo_down2 = slo_check(2, sli2, slo, slo_up, slo_down2, cfgi["loglevel"])
+        }
+
         // determine whether links are up or down based on packet recv timeouts
-        link1_up := to1.Alive() && cto1.Alive() && (!slomode || sli1 >= slo)
-        link2_up := to2.Alive() && cto2.Alive() && (!slomode || sli2 >= slo)
+        link1_up := to1.Alive() && cto1.Alive() && !slo_down1
+        link2_up := to2.Alive() && cto2.Alive() && !slo_down2
 
         i := 0
         if link1_up {
