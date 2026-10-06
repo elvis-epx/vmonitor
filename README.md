@@ -126,7 +126,16 @@ needs to be to stay stable.
 
 Note that vmonitor is not the ideal tool to monitor ISP SLOs or test for SLOs
 like 99.9%. The SLO it calculates is a rough estimate and should be used as a
-rough guide to test whether the link is usable.
+guide to test whether the link is usable.
+
+Another downside of using SLO is the difficulty of having client and server
+to agree on the same state separately. It is not uncommon to have packet
+loss more in one direction than in another, so client and server may disagree
+about the current SLI.
+
+Therefore, SLO mode is recommended for scenarios where only the client changes
+network configuration, and the server is just the packet reflector and external
+reference. 
 
 ## More about algorithm and protocol
 
