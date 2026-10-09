@@ -44,8 +44,9 @@ the same config file for both sides, but supply no-op scripts for the server.
 ## Basic usage 
 
 You can build it locally. For this, you need to install the Go toolchain. Another
-option is to use the ready-made binaries in the folder builds/. Assuming you have
-a binary in the current directory, you run it like this:
+option is to use the [prebuilt Linux binaries](https://github.com/elvis-epx/vmonitor/releases)
+(amd64 and arm64) published with each release. Assuming you have a binary in the
+current directory, you run it like this:
 
 ```
 ./vmonitor configfile client|server

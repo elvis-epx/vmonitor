@@ -12,13 +12,16 @@ README.md for the configuration and the algorithm.
 - `goalarmeitbl/`: a small timer and UDP server library that turns timer
   expiries and received packets into events on one channel.
 - `e2e_test.py`: end-to-end tests. See TESTING.md.
-- `builds/`: cross-compiled Linux binaries, committed to the repo
-  (`make` rebuilds them).
+- `builds/`: cross-compiled Linux binaries made by `make all`. Not committed;
+  `.github/workflows/release.yml` builds them and attaches them to a GitHub
+  Release when a `v*` tag is pushed. `ci.yml` runs `make test` and `make all`
+  on every push. `e2e_test.py` is run locally only, not in CI.
 
 ## Build and test
 
 ```
 go build -o vmonitor .
+make test                          # go vet
 ./e2e_test.py                      # about 6-7 minutes, real time
 ./e2e_test.py --only <case> --keep
 ```

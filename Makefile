@@ -1,16 +1,25 @@
-all: builds/vmonitor.linux.amd64 builds/vmonitor.linux.arm64 vmonitor
+PLATFORMS = linux.amd64 linux.arm64
+
+BINARIES = $(foreach p,$(PLATFORMS),builds/vmonitor.$(p))
+SOURCES = vmonitor.go $(wildcard goalarmeitbl/*.go) go.mod go.sum
+
+all: $(BINARIES) vmonitor
 
 clean:
-	rm -f builds/*
+	rm -f builds/* vmonitor
 
-builds/vmonitor.linux.amd64: vmonitor.go goalarmeitbl/*.go
-	( GOOS=linux GOARCH=amd64 go build -o $@ vmonitor.go )
-
-builds/vmonitor.linux.arm64: vmonitor.go goalarmeitbl/*.go
-	( GOOS=linux GOARCH=arm64 go build -o $@ vmonitor.go )
-
-vmonitor: vmonitor.go goalarmeitbl/*.go
-	go build -o vmonitor vmonitor.go
+test:
+	go vet ./...
 
 e2e:
 	./e2e_test.py
+
+# builds/vmonitor.<os>.<arch>
+builds/vmonitor.%: $(SOURCES)
+	GOOS=$(word 1,$(subst ., ,$*)) GOARCH=$(word 2,$(subst ., ,$*)) \
+		go build -trimpath -o $@ .
+
+vmonitor: $(SOURCES)
+	go build -o vmonitor .
+
+.PHONY: all clean test e2e

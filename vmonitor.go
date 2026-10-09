@@ -269,7 +269,7 @@ func recvudp(global *VMonitor, persona string, link int, secret []byte,
         }
     }
 
-    feedback <- Event{msg, nil}
+    feedback <- Event{Name: msg}
 }
 
 // UDP packet sender
@@ -531,7 +531,7 @@ func main() {
     ch := make(chan Event)
 
     // using a goroutine this since ch is unbuffered
-    go func() { ch <- Event{"start", nil} }()
+    go func() { ch <- Event{Name: "start"} }()
 
     secret := []byte(cfgs["secret"])
 
